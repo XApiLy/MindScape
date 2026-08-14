@@ -1,0 +1,108 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import 'tailwindcss';
+
+@layer base {
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #0b0b0c;
+    color: #e8e6e3;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Custom Scrollbars — quiet, only tinted on hover */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Flat neutral panels — no blur haze, no colored glow.
+   glass-panel / glass-capsule kept as aliases so existing markup stays styled. */
+.panel,
+.glass-panel {
+  background: #141416;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-capsule {
+  background: #16171a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.panel-inset {
+  background: #0f0f11;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Framed workspace stage — subtle top light, vignette, and faint dot grid
+   for a sense of enclosure and depth without any neon glow. */
+.stage-surface {
+  background-color: #0d0d0f;
+  background-image:
+    radial-gradient(130% 90% at 50% -10%, rgba(255, 255, 255, 0.045), transparent 55%),
+    radial-gradient(100% 100% at 50% 120%, rgba(0, 0, 0, 0.5), transparent 60%),
+    radial-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    22px 22px;
+}
+
+/* Crafted card elevation: deep drop + a hairline top bevel highlight. */
+.card-elev {
+  box-shadow:
+    0 30px 70px -20px rgba(0, 0, 0, 0.75),
+    0 8px 24px -12px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.raise-1 {
+  box-shadow:
+    0 16px 40px -18px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* App ground behind the floating panels */
+.app-ground {
+  background-color: #08080a;
+  background-image: radial-gradient(120% 100% at 50% -15%, rgba(255, 255, 255, 0.02), transparent 52%);
+}
+
+/* Restrained text selection */
+::selection {
+  background: rgba(203, 168, 106, 0.22);
+  color: #f0e9dc;
+}
+
+@keyframes dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.animate-dash {
+  stroke-dasharray: 6, 6;
+  animation: dash 1s linear infinite;
+}

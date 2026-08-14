@@ -1,0 +1,10 @@
+{
+  "description": "Engage in intelligent, AI-powered conversations with a user-friendly chat interface designed for seamless interaction and instant assistance.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-hygiene:
+    name: repository-hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Reject generated or private runtime files
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_pattern='(^|/)(node_modules|target|dist|coverage|runtime-data|local-data|crash-reports)/|(^|/)\.env($|\.)|\.(db|sqlite|sqlite3|pem|p12|pfx)$|\.(db|sqlite|sqlite3)-(wal|shm)$'
+          if git ls-files | grep -E "$forbidden_pattern"; then
+            echo "Forbidden generated, runtime, credential, or database files are tracked."
+            exit 1
+          fi
+
+  frontend:
+    name: frontend
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm and Node.js
+        uses: pnpm/setup@v1
+        with:
+          version: 11
+          runtime: node@24
+          cache: true
+          cache-dependency-path: desktop/pnpm-lock.yaml
+          package-json-file: desktop/package.json
+          install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test canvas projection
+        run: pnpm test:canvas
+
+      - name: Test chat run state
+        run: pnpm test:chat
+
+      - name: Build frontend
+        run: pnpm build
+
+  rust:
+    name: rust
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings denied
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --all-targets --all-features
