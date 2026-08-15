@@ -333,3 +333,9 @@ PEC 与实际工程大体一致：员工01建立跨团队契约与上下文快�
 新增 `CONTRIBUTING.md`、Pull Request 模板、`docs/engineering/git-workflow.md` 和 GitHub Actions CI。治理规则覆盖仓库边界、分支命名、Conventional Commits、WIP、风险分级、评审人数、契约与迁移要求、默认 Squash Merge、冲突处理、回滚、热修复、发布、所有权和管理指标。CI 提供 `repository-hygiene`、`frontend`、`rust` 三项可配置为主分支必需检查的门禁。
 
 首个基线提交前再次验证：画布测试 3/3、Chat 测试 4/4、前端生产构建、Rust 格式检查、严格 Clippy、Rust 测试 22/22和 CI YAML 解析均通过。远程地址和真实平台账号尚未提供，因此远程分支保护与 CODEOWNERS 将在连接托管平台后配置。
+
+## 2026-08-15：连接 GitHub 远程仓库
+
+用户提供 GitHub 仓库 `https://github.com/XApiLy/MindScape.git`。远程 `main` 仅包含一个两行 README 初始化提交；本地基线通过 rebase 安全重放到该提交之后，保留线性历史，没有强推或覆盖远程已有历史。根仓库已将该地址配置为 `origin`，待推送后建立本地 `main` 对 `origin/main` 的跟踪关系。
+
+平台分支保护、必需检查和 CODEOWNERS 仍需在 GitHub 仓库侧配置；前两项可在首次推送与 CI 注册后完成，CODEOWNERS 等待真实协作者账号名单。

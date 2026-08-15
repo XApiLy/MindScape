@@ -4,6 +4,8 @@
 >
 > 适用范围：`D:\Project\MindScape` 根仓库及全部子目录
 >
+> 远程仓库：<https://github.com/XApiLy/MindScape>
+>
 > 对应任务：REL-002
 
 ## 1. 目标
