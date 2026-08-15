@@ -31,6 +31,7 @@
 
 ## 验证证据
 
+- [ ] `node scripts/check-pec-retention.mjs`
 - [ ] `pnpm test:canvas`
 - [ ] `pnpm test:chat`
 - [ ] `pnpm build`
@@ -40,6 +41,14 @@
 - [ ] 已完成适用的手工 / E2E / 性能 / 恢复验证
 
 证据、截图或测试输出摘要：
+
+## PEC 时效性
+
+- [ ] 本 PR 没有产生需要更新 PEC 的实质状态变化
+- [ ] 或：已归档负责人旧 PEC，并新增唯一的当前 PEC
+- [ ] 当前 PEC 目录仍恰好为 6 个文件，且员工01～05各一份
+
+不适用或归档路径说明：
 
 ## 风险与回滚
 

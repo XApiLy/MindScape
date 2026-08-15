@@ -11,7 +11,13 @@ MindScape 使用短生命周期分支、强制 Pull Request、线性主干和默
 
 ## 本地最低检查
 
-在 `desktop/` 下执行：
+从仓库根目录先执行 PEC 当前窗口校验：
+
+```powershell
+node scripts/check-pec-retention.mjs
+```
+
+随后在 `desktop/` 下执行：
 
 ```powershell
 pnpm test:canvas
@@ -30,4 +36,5 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - 示例：`feat(provider): stream OpenAI-compatible responses`。
 - 提交正文或尾注必须关联任务：`Refs: PROV-008`。
 - PR 标题同样使用上述格式，并完整填写风险、测试、数据迁移、回滚和安全说明。
+- 工程推进涉及员工状态变化时，必须在同一 PR 中归档自己的旧 PEC 并新增当前 PEC。
 - 禁止直接推送 `main`，禁止把密钥、数据库、本地会话、日志和构建产物加入仓库。

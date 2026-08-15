@@ -339,3 +339,11 @@ PEC 与实际工程大体一致：员工01建立跨团队契约与上下文快�
 用户提供 GitHub 仓库 `https://github.com/XApiLy/MindScape.git`。远程 `main` 仅包含一个两行 README 初始化提交；本地基线通过 rebase 安全重放到该提交之后，保留线性历史，没有强推或覆盖远程已有历史。根仓库已将该地址配置为 `origin`，待推送后建立本地 `main` 对 `origin/main` 的跟踪关系。
 
 平台分支保护、必需检查和 CODEOWNERS 仍需在 GitHub 仓库侧配置；前两项可在首次推送与 CI 注册后完成，CODEOWNERS 等待真实协作者账号名单。
+
+## 2026-08-15：建立 PEC 六文件当前窗口
+
+用户要求提高 PEC 的时效性：当前 PEC 目录只能保留 6 个文件，分别为员工01～05各自最新的一份报告，以及一份规则或任务派发文件。员工每次完成推进并生成新 PEC 时，必须把自己的旧报告移入另一个归档文件夹。
+
+项目据此建立 `Project Engineering Communication Archive/` 独立归档目录，并按员工划分子目录。员工02的两份旧报告、员工03、员工04和员工05各一份旧报告已原样移动归档；当前目录保留五名员工各自最新报告，并新增 `PEC-提交归档与时效规则.md` 作为第六文件。
+
+新增权威制度 `docs/engineering/pec-retention-policy.md` 和自动校验器 `scripts/check-pec-retention.mjs`。规则明确提交触发条件、原子替换流程、文件命名、内容契约、时效要求、第六控制文件替换方式和评审责任；CI 的 `repository-hygiene` job 将阻止文件数量、员工唯一性、命名或目录结构不符合要求的变更进入主干。
