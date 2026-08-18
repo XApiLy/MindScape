@@ -2,6 +2,7 @@
 
 - 负责人：员工01（技术负责人）
 - 分支：`codex/m1-integration-recovery`
+- 远端：已推送 `origin/codex/m1-integration-recovery`；Draft PR 待通过 GitHub 创建入口建立。
 - 日期：2026-08-18
 - 结论：当前只建立可构建、可审阅、可回滚的 M1 集成基线；真实验收脚本未闭环，产品结论仍为 **No-Go**。
 
