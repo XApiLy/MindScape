@@ -40,6 +40,15 @@ pub struct ProviderDescriptor {
     pub models: HashMap<String, ModelCapabilities>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConnectionTestResult {
+    pub provider_id: String,
+    pub authenticated: bool,
+    pub available_models: Vec<String>,
+    pub checked_at: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RunCancellation(Arc<std::sync::atomic::AtomicBool>);
 
@@ -55,6 +64,8 @@ impl RunCancellation {
 
 pub trait ProviderAdapter: Send + Sync {
     fn descriptor(&self) -> &ProviderDescriptor;
+
+    fn test_connection(&self) -> Result<ProviderConnectionTestResult, ProviderError>;
 
     fn run(
         &self,
@@ -138,6 +149,37 @@ impl ProviderRuntime {
         self.registry.descriptors()
     }
 
+    pub fn test_connection(
+        &self,
+        provider_id: &str,
+    ) -> Result<ProviderConnectionTestResult, ProviderRuntimeError> {
+        self.registry
+            .adapter(provider_id)
+            .ok_or_else(|| ProviderRuntimeError::ProviderNotRegistered(provider_id.into()))?
+            .test_connection()
+            .map_err(ProviderRuntimeError::Provider)
+    }
+
+    pub fn model_capabilities(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<ModelCapabilities, ProviderRuntimeError> {
+        let adapter = self
+            .registry
+            .adapter(provider_id)
+            .ok_or_else(|| ProviderRuntimeError::ProviderNotRegistered(provider_id.to_string()))?;
+        adapter
+            .descriptor()
+            .models
+            .get(model_id)
+            .cloned()
+            .ok_or_else(|| ProviderRuntimeError::ModelNotRegistered {
+                provider_id: provider_id.to_string(),
+                model_id: model_id.to_string(),
+            })
+    }
+
     pub fn run(
         &self,
         request: &ModelRunRequest,
@@ -147,14 +189,7 @@ impl ProviderRuntime {
         let adapter = self.registry.adapter(&request.provider_id).ok_or_else(|| {
             ProviderRuntimeError::ProviderNotRegistered(request.provider_id.clone())
         })?;
-        let capabilities = adapter
-            .descriptor()
-            .models
-            .get(&request.model_id)
-            .ok_or_else(|| ProviderRuntimeError::ModelNotRegistered {
-                provider_id: request.provider_id.clone(),
-                model_id: request.model_id.clone(),
-            })?;
+        let capabilities = self.model_capabilities(&request.provider_id, &request.model_id)?;
 
         for capability in &request.capabilities {
             if !capabilities.supports(*capability) {

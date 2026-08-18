@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:canvas": "node --test --experimental-strip-types src/canvas/graphProjection.test.ts",
-    "test:chat": "node --test --experimental-strip-types src/app/chatRunState.test.ts",
+    "test:canvas": "node --test --experimental-strip-types src/canvas/graphProjection.test.ts src/canvas/canvasViewport.test.ts src/canvas/canvasViewportPersistence.test.ts",
+    "test:canvas:perf": "node --test --experimental-strip-types src/canvas/canvasPerformance.test.ts",
+    "test:chat": "node --test --experimental-strip-types src/app/chatRunState.test.ts src/app/providerCatalog.test.ts src/app/commandErrorPresentation.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

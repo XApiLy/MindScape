@@ -6,12 +6,15 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, types::Type};
 
 use crate::domain::{
-    AppendTurnInput, BranchType, CanvasNodePosition, CompleteTurnInput, ContentBlock,
-    ContextConstraint, ContextMessageRef, ContextSnapshot, ContextTurn, Conversation,
+    AppendTurnInput, BranchType, CanvasNodePosition, CanvasViewportState, CompleteTurnInput,
+    ContentBlock, ContextConstraint, ContextMessageRef, ContextSnapshot, ContextTurn, Conversation,
     ConversationEdge, ConversationGraph, ConversationNode, ConversationSummary,
     CreateConversationInput, KernelError, KernelResult, Message, MessageRole, OmittedContextRef,
-    RunState, SCHEMA_VERSION, UpdateNodePositionInput, Workspace, blocks_plain_text,
-    contracts::{EvidenceRef, ModelRunEvent, ModelRunEventEnvelope, ModelRunRequest},
+    RunState, SCHEMA_VERSION, SaveCanvasViewportInput, UpdateNodePositionInput, Workspace,
+    blocks_plain_text,
+    contracts::{
+        EvidenceRef, ModelRunEvent, ModelRunEventEnvelope, ModelRunProjection, ModelRunRequest,
+    },
     new_id, now_timestamp,
 };
 
@@ -156,6 +159,16 @@ CREATE TABLE model_run_events (
     occurred_at TEXT NOT NULL,
     event_json TEXT NOT NULL,
     UNIQUE(run_id, sequence)
+);
+"#;
+
+const MIGRATION_V5: &str = r#"
+CREATE TABLE canvas_viewports (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    zoom REAL NOT NULL CHECK(zoom > 0),
+    updated_at TEXT NOT NULL
 );
 "#;
 
@@ -659,6 +672,139 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn save_canvas_viewport(
+        &self,
+        input: &SaveCanvasViewportInput,
+    ) -> KernelResult<CanvasViewportState> {
+        input.validate()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let conversation_exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+            [&input.conversation_id],
+            |row| row.get(0),
+        )?;
+        if !conversation_exists {
+            return Err(KernelError::NotFound {
+                entity: "conversation",
+                id: input.conversation_id.clone(),
+            });
+        }
+        let updated_at = now_timestamp();
+        transaction.execute(
+            "INSERT INTO canvas_viewports (conversation_id, x, y, zoom, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+                x = excluded.x, y = excluded.y, zoom = excluded.zoom,
+                updated_at = excluded.updated_at",
+            params![
+                input.conversation_id,
+                input.x,
+                input.y,
+                input.zoom,
+                updated_at
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(CanvasViewportState {
+            conversation_id: input.conversation_id.clone(),
+            x: input.x,
+            y: input.y,
+            zoom: input.zoom,
+            updated_at,
+        })
+    }
+
+    pub fn get_canvas_viewport(
+        &self,
+        conversation_id: &str,
+    ) -> KernelResult<Option<CanvasViewportState>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT conversation_id, x, y, zoom, updated_at
+                 FROM canvas_viewports WHERE conversation_id = ?1",
+                [conversation_id],
+                |row| {
+                    Ok(CanvasViewportState {
+                        conversation_id: row.get(0)?,
+                        x: row.get(1)?,
+                        y: row.get(2)?,
+                        zoom: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn recover_interrupted_runs(&self) -> KernelResult<usize> {
+        let incomplete = self
+            .list_model_runs(None)?
+            .into_iter()
+            .filter(|run| matches!(run.state, RunState::Pending | RunState::Streaming))
+            .collect::<Vec<_>>();
+        for run in &incomplete {
+            self.record_model_run_event(&ModelRunEventEnvelope {
+                contract_version: crate::domain::contracts::RUNTIME_CONTRACT_VERSION.into(),
+                event_id: new_id("run-event"),
+                run_id: run.run_id.clone(),
+                node_id: run.node_id.clone(),
+                sequence: run.last_sequence + 1,
+                occurred_at: now_timestamp(),
+                event: ModelRunEvent::application_interrupted(!run.partial_content.is_empty()),
+            })?;
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let now = now_timestamp();
+        let orphaned = transaction.execute(
+            "UPDATE conversation_nodes
+             SET run_state = 'failed', updated_at = ?1, revision = revision + 1
+             WHERE run_state IN ('pending', 'streaming')
+               AND NOT EXISTS (SELECT 1 FROM model_runs r WHERE r.node_id = conversation_nodes.id)",
+            [&now],
+        )?;
+        transaction.commit()?;
+        Ok(incomplete.len() + orphaned)
+    }
+
+    pub fn list_model_runs(
+        &self,
+        conversation_id: Option<&str>,
+    ) -> KernelResult<Vec<ModelRunProjection>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, conversation_id, node_id, provider_id, model_id, state,
+                    last_sequence, partial_content, terminal_event_json, updated_at
+             FROM model_runs
+             WHERE (?1 IS NULL OR conversation_id = ?1)
+             ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map([conversation_id], |row| {
+            let state = parse_run_state(row.get(5)?, 5)?;
+            let terminal_json: Option<String> = row.get(8)?;
+            let terminal_event = terminal_json
+                .map(|json| parse_json::<ModelRunEvent>(&json, 8))
+                .transpose()?;
+            Ok(ModelRunProjection {
+                run_id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                node_id: row.get(2)?,
+                provider_id: row.get(3)?,
+                model_id: row.get(4)?,
+                state,
+                last_sequence: row.get(6)?,
+                partial_content: row.get(7)?,
+                terminal_event,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     #[cfg(test)]
     pub fn event_count(&self, aggregate_id: &str) -> KernelResult<i64> {
         let connection = self.connection()?;
@@ -692,6 +838,25 @@ impl SqliteStore {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn model_run_request_by_idempotency_key(
+        &self,
+        idempotency_key: &str,
+    ) -> KernelResult<Option<ModelRunRequest>> {
+        let connection = self.connection()?;
+        let json: Option<String> = connection
+            .query_row(
+                "SELECT request_json FROM model_runs WHERE idempotency_key = ?1",
+                [idempotency_key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|value| parse_json_value(&value)).transpose()
+    }
+
+    pub fn load_model_run_node(&self, node_id: &str) -> KernelResult<ConversationNode> {
+        self.load_node(node_id)
     }
 
     pub fn record_model_run_event(&self, envelope: &ModelRunEventEnvelope) -> KernelResult<()> {
@@ -735,14 +900,12 @@ impl SqliteStore {
             )));
         }
 
-        let (state, delta, terminal) = match &envelope.event {
-            ModelRunEvent::Started => ("streaming", None, None),
-            ModelRunEvent::TextDelta { delta } => ("streaming", Some(delta.as_str()), None),
-            ModelRunEvent::UsageUpdated { .. } => ("streaming", None, None),
-            ModelRunEvent::Completed { .. } => ("completed", None, Some(&envelope.event)),
-            ModelRunEvent::Cancelled { .. } => ("cancelled", None, Some(&envelope.event)),
-            ModelRunEvent::Failed { .. } => ("failed", None, Some(&envelope.event)),
+        let state = envelope.event.resulting_state().as_db();
+        let delta = match &envelope.event {
+            ModelRunEvent::TextDelta { delta } => Some(delta.as_str()),
+            _ => None,
         };
+        let terminal = envelope.event.is_terminal().then_some(&envelope.event);
         transaction.execute(
             "INSERT INTO model_run_events (event_id, run_id, sequence, occurred_at, event_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -769,6 +932,7 @@ impl SqliteStore {
                 envelope.run_id,
             ],
         )?;
+        apply_run_event_to_node(&transaction, envelope, state)?;
         transaction.commit()?;
         Ok(())
     }
@@ -883,11 +1047,98 @@ impl SqliteStore {
                 [now_timestamp()],
             )?;
             transaction.commit()?;
+            current_version = 4;
         }
 
-        debug_assert_eq!(SCHEMA_VERSION, 4);
+        if current_version < 5 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(MIGRATION_V5)?;
+            transaction.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (5, ?1)",
+                [now_timestamp()],
+            )?;
+            transaction.commit()?;
+        }
+
+        debug_assert_eq!(SCHEMA_VERSION, 5);
         Ok(())
     }
+}
+
+fn apply_run_event_to_node(
+    transaction: &Transaction<'_>,
+    envelope: &ModelRunEventEnvelope,
+    run_state: &str,
+) -> KernelResult<()> {
+    if matches!(envelope.event, ModelRunEvent::UsageUpdated { .. }) {
+        return Ok(());
+    }
+    let (conversation_id, provider_id, model_id, partial_content): (
+        String,
+        String,
+        String,
+        String,
+    ) = transaction.query_row(
+        "SELECT conversation_id, provider_id, model_id, partial_content
+             FROM model_runs WHERE id = ?1",
+        [&envelope.run_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let terminal = envelope.event.is_terminal();
+    let now = &envelope.occurred_at;
+    let mut assistant_message_id = None;
+    if terminal && !partial_content.is_empty() {
+        let existing: Option<String> = transaction.query_row(
+            "SELECT assistant_message_id FROM conversation_nodes WHERE id = ?1",
+            [&envelope.node_id],
+            |row| row.get(0),
+        )?;
+        if existing.is_none() {
+            let message = Message {
+                id: new_id("message"),
+                conversation_id: conversation_id.clone(),
+                node_id: envelope.node_id.clone(),
+                role: MessageRole::Assistant,
+                content_blocks: vec![ContentBlock::text(partial_content.clone())],
+                created_at: now.clone(),
+            };
+            insert_message(transaction, &message)?;
+            assistant_message_id = Some(message.id);
+        }
+    }
+    transaction.execute(
+        "UPDATE conversation_nodes
+         SET run_state = ?1, provider_id = ?2, model_id = ?3,
+             assistant_message_id = COALESCE(?4, assistant_message_id),
+             updated_at = ?5, revision = revision + 1
+         WHERE id = ?6",
+        params![
+            run_state,
+            provider_id,
+            model_id,
+            assistant_message_id,
+            now,
+            envelope.node_id,
+        ],
+    )?;
+    if terminal {
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1, revision = revision + 1 WHERE id = ?2",
+            params![now, conversation_id],
+        )?;
+        append_event(
+            transaction,
+            "modelRun",
+            &envelope.run_id,
+            "model_run.terminal_state_applied",
+            &serde_json::json!({
+                "nodeId": envelope.node_id,
+                "state": run_state,
+                "partialContentRetained": !partial_content.is_empty(),
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 fn database_schema_version(connection: &Connection) -> KernelResult<i64> {
@@ -1188,7 +1439,9 @@ mod tests {
             branch_type: BranchType::Continues,
             current_input: input.prompt.clone(),
             path: vec![],
-        });
+            max_context_tokens: None,
+        })
+        .expect("compile context");
         let node = store.insert_turn(&input, &snapshot).expect("pending node");
         let request = ModelRunRequest {
             contract_version: "mindscape.runtime.v1".into(),
@@ -1355,6 +1608,13 @@ mod tests {
         store
             .create_model_run(&request)
             .expect("idempotent create model run");
+        assert_eq!(
+            store
+                .model_run_request_by_idempotency_key(&request.idempotency_key)
+                .expect("load persisted request"),
+            Some(request.clone()),
+            "schema v4 must preserve the complete frozen ModelRunRequest"
+        );
         let started = ModelRunEventEnvelope {
             contract_version: request.contract_version.clone(),
             event_id: "event-started".into(),
@@ -1396,11 +1656,130 @@ mod tests {
         assert_eq!(partial, "partial answer");
         assert_eq!(event_count, 2);
 
+        let completed = ModelRunEventEnvelope {
+            event_id: "event-completed".into(),
+            sequence: 3,
+            event: ModelRunEvent::Completed {
+                finish_reason: crate::domain::contracts::FinishReason::Stop,
+                usage: crate::domain::contracts::ModelUsage::default(),
+            },
+            ..started.clone()
+        };
+        store
+            .record_model_run_event(&completed)
+            .expect("record completed");
+        store
+            .record_model_run_event(&completed)
+            .expect("idempotent completed replay");
+        let node = store.load_node(&request.node_id).expect("completed node");
+        assert_eq!(node.run_state, RunState::Completed);
+        assert_eq!(
+            node.assistant_message
+                .as_ref()
+                .map(|message| blocks_plain_text(&message.content_blocks)),
+            Some("partial answer".into())
+        );
+
         let skipped = ModelRunEventEnvelope {
             event_id: "event-skipped".into(),
-            sequence: 4,
+            sequence: 5,
             ..started
         };
         assert!(store.record_model_run_event(&skipped).is_err());
+    }
+
+    #[test]
+    fn startup_recovery_fails_incomplete_run_and_retains_partial_output() {
+        let (_directory, store, request) = store_with_pending_node();
+        store.create_model_run(&request).expect("create model run");
+        for envelope in [
+            ModelRunEventEnvelope {
+                contract_version: request.contract_version.clone(),
+                event_id: "recovery-started".into(),
+                run_id: request.run_id.clone(),
+                node_id: request.node_id.clone(),
+                sequence: 1,
+                occurred_at: now_timestamp(),
+                event: ModelRunEvent::Started,
+            },
+            ModelRunEventEnvelope {
+                contract_version: request.contract_version.clone(),
+                event_id: "recovery-delta".into(),
+                run_id: request.run_id.clone(),
+                node_id: request.node_id.clone(),
+                sequence: 2,
+                occurred_at: now_timestamp(),
+                event: ModelRunEvent::TextDelta {
+                    delta: "retained partial".into(),
+                },
+            },
+        ] {
+            store
+                .record_model_run_event(&envelope)
+                .expect("persist pre-crash event");
+        }
+
+        assert_eq!(store.recover_interrupted_runs().unwrap(), 1);
+        assert_eq!(store.recover_interrupted_runs().unwrap(), 0);
+
+        let run = store.list_model_runs(None).unwrap().remove(0);
+        assert_eq!(run.state, RunState::Failed);
+        assert_eq!(run.partial_content, "retained partial");
+        assert!(matches!(
+            run.terminal_event,
+            Some(ModelRunEvent::Failed { .. })
+        ));
+        let node = store.load_node(&request.node_id).expect("recovered node");
+        assert_eq!(node.run_state, RunState::Failed);
+        assert_eq!(
+            node.assistant_message
+                .as_ref()
+                .map(|message| blocks_plain_text(&message.content_blocks)),
+            Some("retained partial".into())
+        );
+    }
+
+    #[test]
+    fn canvas_viewport_round_trips_and_updates_per_conversation() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("viewport.sqlite3")).expect("open store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id,
+                title: "Viewport".into(),
+            })
+            .expect("conversation");
+        assert!(
+            store
+                .get_canvas_viewport(&conversation.id)
+                .unwrap()
+                .is_none()
+        );
+
+        for (x, y, zoom) in [(10.0, 20.0, 0.8), (-42.0, 15.5, 1.2)] {
+            store
+                .save_canvas_viewport(&SaveCanvasViewportInput {
+                    conversation_id: conversation.id.clone(),
+                    x,
+                    y,
+                    zoom,
+                })
+                .expect("save viewport");
+        }
+        let viewport = store
+            .get_canvas_viewport(&conversation.id)
+            .unwrap()
+            .expect("persisted viewport");
+        assert_eq!((viewport.x, viewport.y, viewport.zoom), (-42.0, 15.5, 1.2));
+
+        let invalid = store.save_canvas_viewport(&SaveCanvasViewportInput {
+            conversation_id: conversation.id,
+            x: 0.0,
+            y: 0.0,
+            zoom: 0.0,
+        });
+        assert!(invalid.is_err());
     }
 }

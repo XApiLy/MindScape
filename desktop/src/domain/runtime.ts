@@ -1,4 +1,7 @@
 import type { ContextSnapshot } from "./context";
+import type { RunState } from "./common";
+
+export const APPLICATION_INTERRUPTED_PROVIDER_CODE = "application_interrupted" as const;
 
 export type CapabilityRequirement =
   | "textInput"
@@ -82,4 +85,17 @@ export type ModelRunEventEnvelope = {
   sequence: number;
   occurredAt: string;
   event: ModelRunEvent;
+};
+
+export type ModelRunProjection = {
+  runId: string;
+  conversationId: string;
+  nodeId: string;
+  providerId: string;
+  modelId: string;
+  state: RunState;
+  lastSequence: number;
+  partialContent: string;
+  terminalEvent: ModelRunEvent | null;
+  updatedAt: string;
 };

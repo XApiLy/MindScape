@@ -1,16 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createChatRunState,
+  createChatRunStateFromProjection,
+  rejectChatRunCancellation,
+  requestChatRunCancellation,
   reduceModelRunEnvelope,
   type ChatRunState,
 } from "./app/chatRunState";
+import { commandErrorMessage as safeErrorMessage } from "./app/commandErrorPresentation";
 import { runMockModel } from "./app/mockModelRuntime";
 import { kernelClient } from "./app/kernelClient";
+import {
+  buildChatModelOptions,
+  chooseModelSelection,
+} from "./app/providerCatalog";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { ContextDialog } from "./components/ContextDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import type { CanvasPoint } from "./canvas/graphProjection";
+import {
+  CanvasViewportPersistence,
+  loadCanvasViewport,
+} from "./canvas/canvasViewportPersistence";
+import type { CanvasPoint, CanvasViewport } from "./canvas/graphProjection";
 import type {
   BranchType,
   Conversation,
@@ -21,7 +33,9 @@ import type {
   ContextSnapshot,
   KernelBootstrap,
   Message,
-  ModelRunRequest,
+  ModelSelection,
+  ModelRunProjection,
+  ProviderDescriptor,
   Workspace,
 } from "./domain";
 
@@ -33,6 +47,38 @@ const previewWorkspace: Workspace = {
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
+
+const previewProvider: ProviderDescriptor = {
+  id: "mock",
+  displayName: "Mock Provider",
+  defaultBaseUrl: null,
+  customBaseUrlAllowed: false,
+  credentialRequired: false,
+  models: {
+    "mock-stream-v1": {
+      textInput: true,
+      imageInput: false,
+      toolCalling: false,
+      usageReporting: true,
+      streaming: true,
+      contextWindowTokens: 16_384,
+    },
+  },
+};
+
+const DEFAULT_PROVIDER_ACCOUNT = "default";
+
+function messageToPrompt(message: Message) {
+  return message.contentBlocks
+    .map((block) => {
+      if (block.type === "text") return block.text;
+      if (block.type === "code") return block.code;
+      if (block.type === "link") return block.label ?? block.url;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
 
 function newPreviewConversation(title: string): Conversation {
   const timestamp = new Date().toISOString();
@@ -123,8 +169,83 @@ export function App() {
   const [contextSnapshot, setContextSnapshot] = useState<ContextSnapshot | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [run, setRun] = useState<ChatRunState | null>(null);
+  const [modelRuns, setModelRuns] = useState<ModelRunProjection[]>([]);
+  const [canvasViewport, setCanvasViewport] = useState<CanvasViewport | null>(null);
+  const [runSubmitting, setRunSubmitting] = useState(false);
+  const [providers, setProviders] = useState<ProviderDescriptor[]>([previewProvider]);
+  const [providerCredentials, setProviderCredentials] = useState<Record<string, boolean>>({ mock: true });
+  const [providersLoading, setProvidersLoading] = useState(false);
+  const [providersError, setProvidersError] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<ModelSelection | null>({
+    providerId: "mock",
+    modelId: "mock-stream-v1",
+  });
   const [notice, setNotice] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const runInFlightRef = useRef(false);
+  const viewportPersistenceRef = useRef<CanvasViewportPersistence | null>(null);
+
+  const refreshProviders = useCallback(async () => {
+    setProvidersLoading(true);
+    setProvidersError(null);
+    try {
+      const descriptors = await kernelClient.listProviders();
+      const credentialEntries = await Promise.all(
+        descriptors.map(async (provider) => [
+          provider.id,
+          provider.credentialRequired
+            ? await kernelClient.hasProviderCredential({
+                providerId: provider.id,
+                accountId: DEFAULT_PROVIDER_ACCOUNT,
+              })
+            : true,
+        ] as const),
+      );
+      const credentialStatus = Object.fromEntries(credentialEntries);
+      setProviders(descriptors);
+      setProviderCredentials(credentialStatus);
+      setSelectedModel((current) => chooseModelSelection(descriptors, credentialStatus, current));
+    } catch (error) {
+      setProvidersError(safeErrorMessage(error));
+    } finally {
+      setProvidersLoading(false);
+    }
+  }, []);
+
+  const modelOptions = useMemo(
+    () => buildChatModelOptions(providers, providerCredentials),
+    [providerCredentials, providers],
+  );
+
+  useEffect(() => {
+    if (mode !== "tauri") {
+      viewportPersistenceRef.current = null;
+      return;
+    }
+    const persistence = new CanvasViewportPersistence(
+      (input) => kernelClient.saveCanvasViewport(input),
+      {
+        onError: (error) => {
+          setNotice(`画布视口暂未保存：${safeErrorMessage(error)}`);
+        },
+      },
+    );
+    viewportPersistenceRef.current = persistence;
+    return () => {
+      void persistence.flushAll();
+      if (viewportPersistenceRef.current === persistence) {
+        viewportPersistenceRef.current = null;
+      }
+    };
+  }, [mode]);
+
+  useEffect(() => {
+    const persistence = viewportPersistenceRef.current;
+    const conversationId = selectedConversationId;
+    return () => {
+      if (persistence && conversationId) void persistence.flush(conversationId);
+    };
+  }, [selectedConversationId]);
 
   useEffect(() => {
     let active = true;
@@ -136,6 +257,7 @@ export function App() {
         setConversations(data.conversations);
         setSelectedConversationId(data.conversations[0]?.id ?? null);
         setBooting(false);
+        void refreshProviders();
       },
       () => {
         if (!active) return;
@@ -150,6 +272,9 @@ export function App() {
         setWorkspace(previewWorkspace);
         setConversations([asSummary(welcome)]);
         setPreviewGraphs({ [welcome.id]: welcomeGraph });
+        setProviders([previewProvider]);
+        setProviderCredentials({ mock: true });
+        setSelectedModel({ providerId: "mock", modelId: "mock-stream-v1" });
         setSelectedConversationId(welcome.id);
         setBooting(false);
       },
@@ -157,12 +282,15 @@ export function App() {
     return () => {
       active = false;
       abortControllerRef.current?.abort();
+      runInFlightRef.current = false;
     };
-  }, []);
+  }, [refreshProviders]);
 
   useEffect(() => {
     if (booting || !selectedConversationId) {
       setGraph(null);
+      setModelRuns([]);
+      setCanvasViewport(null);
       setSelectedParentId(null);
       setSelectedBranchType("continues");
       return;
@@ -171,6 +299,8 @@ export function App() {
     if (mode === "preview") {
       const nextGraph = previewGraphs[selectedConversationId] ?? null;
       setGraph(nextGraph);
+      setModelRuns([]);
+      setCanvasViewport(null);
       setSelectedParentId(nextGraph?.nodes.at(-1)?.id ?? null);
       setSelectedBranchType("continues");
       return;
@@ -178,17 +308,49 @@ export function App() {
 
     let active = true;
     setGraphLoading(true);
-    void kernelClient.loadConversationGraph(selectedConversationId).then(
-      (nextGraph) => {
+    setCanvasViewport(null);
+    const viewportRequest = loadCanvasViewport(
+      kernelClient.getCanvasViewport,
+      selectedConversationId,
+    ).then(
+      (viewport) => ({ viewport, error: null }),
+      (error: unknown) => ({ viewport: null, error }),
+    );
+    void Promise.all([
+      kernelClient.loadConversationGraph(selectedConversationId),
+      kernelClient.listModelRuns(selectedConversationId),
+      viewportRequest,
+    ]).then(
+      ([nextGraph, modelRuns, viewportResult]) => {
         if (!active) return;
         setGraph(nextGraph);
+        setModelRuns(modelRuns);
+        setCanvasViewport(viewportResult.viewport);
+        if (viewportResult.error) {
+          setNotice(`会话已恢复，但画布视口读取失败：${safeErrorMessage(viewportResult.error)}`);
+        }
         setSelectedParentId(nextGraph.nodes.at(-1)?.id ?? null);
         setSelectedBranchType("continues");
+        if (!runInFlightRef.current) {
+          const latestRecoverable = modelRuns
+            .filter((modelRun) => modelRun.state !== "completed")
+            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+          if (latestRecoverable) {
+            const node = nextGraph.nodes.find((candidate) => candidate.id === latestRecoverable.nodeId);
+            setRun(createChatRunStateFromProjection(latestRecoverable, {
+              prompt: node ? messageToPrompt(node.userMessage) : "恢复的模型运行",
+              parentNodeId: node?.parentNodeId ?? null,
+              branchType: node?.branchType ?? "continues",
+            }));
+          } else {
+            setRun(null);
+          }
+        }
         setGraphLoading(false);
       },
       (error: unknown) => {
         if (!active) return;
-        setNotice(error instanceof Error ? error.message : String(error));
+        setNotice(safeErrorMessage(error));
         setGraphLoading(false);
       },
     );
@@ -198,6 +360,10 @@ export function App() {
   }, [booting, mode, previewGraphs, selectedConversationId]);
 
   const createConversation = async () => {
+    if (runInFlightRef.current) {
+      setNotice("请先停止当前模型运行，再切换或创建会话。");
+      return;
+    }
     const title = `新会话 ${conversations.length + 1}`;
     setNotice(null);
     if (mode === "preview") {
@@ -218,176 +384,208 @@ export function App() {
     }
   };
 
+  const refreshProviderSettings = async () => {
+    if (mode === "preview") {
+      setProviders([previewProvider]);
+      setProviderCredentials({ mock: true });
+      setProvidersError(null);
+      return;
+    }
+    await refreshProviders();
+  };
+
+  const saveProviderCredential = async (providerId: string, secret: string) => {
+    if (mode !== "tauri") throw new Error("浏览器预览不能访问操作系统安全凭据。");
+    try {
+      await kernelClient.setProviderCredential({
+        providerId,
+        accountId: DEFAULT_PROVIDER_ACCOUNT,
+        secret,
+      });
+      await refreshProviders();
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+  };
+
+  const deleteProviderCredential = async (providerId: string) => {
+    if (mode !== "tauri") throw new Error("浏览器预览不能访问操作系统安全凭据。");
+    try {
+      await kernelClient.deleteProviderCredential({
+        providerId,
+        accountId: DEFAULT_PROVIDER_ACCOUNT,
+      });
+      await refreshProviders();
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+  };
+
+  const testProviderConnection = async (providerId: string) => {
+    if (mode !== "tauri") throw new Error("浏览器预览不能测试真实 Provider 连接。");
+    try {
+      return await kernelClient.testProviderConnection(providerId);
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+  };
+
   const persistMockCompletion = async (
     prompt: string,
     content: string,
     parentNodeId: string | null,
     branchType: BranchType,
   ) => {
-    if (!graph) return;
-    if (mode === "preview") {
-      const { node, edge } = createPreviewNode(graph, prompt, content, parentNodeId, branchType);
-      const nextGraph: ConversationGraph = {
-        ...graph,
-        nodes: [...graph.nodes, node],
-        edges: edge ? [...graph.edges, edge] : graph.edges,
-      };
-      setPreviewGraphs((current) => ({ ...current, [graph.conversation.id]: nextGraph }));
-      setConversations((current) =>
-        current.map((conversation) =>
-          conversation.id === graph.conversation.id
-            ? { ...conversation, nodeCount: nextGraph.nodes.length, updatedAt: node.updatedAt }
-            : conversation,
-        ),
-      );
-      setSelectedParentId(node.id);
-      setSelectedBranchType("continues");
-      return;
-    }
-
-    const pendingNode = await kernelClient.appendTurn({
-      conversationId: graph.conversation.id,
-      parentNodeId,
-      branchType,
-      title: prompt.length > 30 ? `${prompt.slice(0, 30)}…` : prompt,
-      prompt,
-      providerId: "mock",
-      modelId: "mock-stream-v1",
-    });
-    await kernelClient.completeTurn({
-      nodeId: pendingNode.id,
-      content,
-      providerId: "mock",
-      modelId: "mock-stream-v1",
-    });
-    const nextGraph = await kernelClient.loadConversationGraph(graph.conversation.id);
-    setGraph(nextGraph);
-    setSelectedParentId(nextGraph.nodes.at(-1)?.id ?? null);
-    setSelectedBranchType("continues");
+    if (!graph || mode !== "preview") return;
+    const { node, edge } = createPreviewNode(graph, prompt, content, parentNodeId, branchType);
+    const nextGraph: ConversationGraph = {
+      ...graph,
+      nodes: [...graph.nodes, node],
+      edges: edge ? [...graph.edges, edge] : graph.edges,
+    };
+    setPreviewGraphs((current) => ({ ...current, [graph.conversation.id]: nextGraph }));
     setConversations((current) =>
       current.map((conversation) =>
-        conversation.id === nextGraph.conversation.id
-          ? { ...conversation, ...nextGraph.conversation, nodeCount: nextGraph.nodes.length }
+        conversation.id === graph.conversation.id
+          ? { ...conversation, nodeCount: nextGraph.nodes.length, updatedAt: node.updatedAt }
           : conversation,
       ),
     );
+    setSelectedParentId(node.id);
+    setSelectedBranchType("continues");
   };
 
-  const sendPrompt = async (prompt: string) => {
-    if (!graph || abortControllerRef.current) return;
+  const sendPrompt = async (prompt: string, modelOverride?: ModelSelection) => {
+    if (!graph || runInFlightRef.current) return;
+    const selection = modelOverride ?? selectedModel;
+    const selectedOption = modelOptions.find(
+      (option) => option.providerId === selection?.providerId && option.modelId === selection.modelId,
+    );
+    const selectedCapabilities = providers
+      .find((provider) => provider.id === selection?.providerId)
+      ?.models[selection?.modelId ?? ""];
+    if (!selection || !selectedOption?.available) {
+      setNotice("请先在模型设置中选择一个可用模型；真实 Provider 需要先安全保存 API Key。");
+      setSettingsOpen(true);
+      return;
+    }
     setNotice(null);
-    const controller = new AbortController();
-    const runId = `run-mock-${Date.now()}`;
-    const transientNodeId = `node-${runId}`;
     const parentNodeId = selectedParentId;
     const branchType = parentNodeId ? selectedBranchType : "continues";
     const parentTitle = graph.nodes.find((node) => node.id === parentNodeId)?.title;
-    let completedContent = "";
-    let terminalEvent: "completed" | "cancelled" | "failed" | null = null;
-    abortControllerRef.current = controller;
+    runInFlightRef.current = true;
+    setRunSubmitting(true);
 
     if (mode === "tauri") {
       try {
-        const pendingNode = await kernelClient.appendTurn({
+        const idempotencyKey = `chat-${crypto.randomUUID()}`;
+        const projection = await kernelClient.startModelRun({
           conversationId: graph.conversation.id,
           parentNodeId,
           branchType,
           title: prompt.length > 30 ? `${prompt.slice(0, 30)}…` : prompt,
           prompt,
-          providerId: "mock",
-          modelId: "mock-stream-v1",
-        });
-        const snapshot = await kernelClient.getContextSnapshot(pendingNode.contextSnapshotId);
-        const request: ModelRunRequest = {
-          contractVersion: "mindscape.runtime.v1",
-          runId,
-          conversationId: graph.conversation.id,
-          nodeId: pendingNode.id,
-          contextSnapshot: snapshot,
-          providerId: "mock",
-          modelId: "mock-stream-v1",
-          capabilities: ["textInput", "usageReporting"],
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          capabilities: selectedCapabilities?.usageReporting
+            ? ["textInput", "usageReporting"]
+            : ["textInput"],
           budget: {
             maxOutputTokens: 1024,
-            maxCostMicrounits: 0,
-            timeoutMs: 30_000,
+            maxCostMicrounits: selectedOption.isMock ? 0 : null,
+            timeoutMs: 120_000,
           },
-          idempotencyKey: runId,
-          createdAt: new Date().toISOString(),
-        };
-        setRun(createChatRunState({
-          runId,
-          nodeId: pendingNode.id,
-          prompt,
-          parentNodeId,
-          branchType,
-        }));
-        await kernelClient.runModel(request, (envelope) => {
-          if (envelope.event.type === "text_delta") completedContent += envelope.event.delta;
-          if (
-            envelope.event.type === "completed" ||
-            envelope.event.type === "cancelled" ||
-            envelope.event.type === "failed"
-          ) {
-            terminalEvent = envelope.event.type;
-          }
+          idempotencyKey,
+        }, (envelope) => {
           setRun((current) =>
-            current?.id === runId ? reduceModelRunEnvelope(current, envelope) : current,
+            reduceModelRunEnvelope(
+              current?.id === envelope.runId
+                ? current
+                : createChatRunState({
+                    runId: envelope.runId,
+                    nodeId: envelope.nodeId,
+                    providerId: selection.providerId,
+                    modelId: selection.modelId,
+                    prompt,
+                    parentNodeId,
+                    branchType,
+                  }),
+              envelope,
+            ),
           );
-        });
-        abortControllerRef.current = null;
-        if (terminalEvent !== "completed" || !completedContent) return;
-        await kernelClient.completeTurn({
-          nodeId: pendingNode.id,
-          content: completedContent,
-          providerId: "mock",
-          modelId: "mock-stream-v1",
         });
         const nextGraph = await kernelClient.loadConversationGraph(graph.conversation.id);
         setGraph(nextGraph);
-        setSelectedParentId(pendingNode.id);
+        setModelRuns((current) => [
+          ...current.filter((modelRun) => modelRun.runId !== projection.runId),
+          projection,
+        ]);
+        setSelectedParentId(projection.nodeId);
         setSelectedBranchType("continues");
         setConversations((current) => current.map((conversation) =>
           conversation.id === nextGraph.conversation.id
             ? { ...conversation, ...nextGraph.conversation, nodeCount: nextGraph.nodes.length }
             : conversation,
         ));
-        window.setTimeout(() => setRun((current) => current?.id === runId ? null : current), 550);
+        if (projection.state === "completed") {
+          setRun(null);
+        } else {
+          setRun(createChatRunStateFromProjection(projection, { prompt, parentNodeId, branchType }));
+        }
       } catch (error) {
-        abortControllerRef.current = null;
-        const safeMessage = error instanceof Error ? error.message : String(error);
-        setNotice(safeMessage);
+        setNotice(safeErrorMessage(error));
+        try {
+          const [nextGraph, nextModelRuns] = await Promise.all([
+            kernelClient.loadConversationGraph(graph.conversation.id),
+            kernelClient.listModelRuns(graph.conversation.id),
+          ]);
+          setGraph(nextGraph);
+          setModelRuns(nextModelRuns);
+          setConversations((current) => current.map((conversation) =>
+            conversation.id === nextGraph.conversation.id
+              ? { ...conversation, ...nextGraph.conversation, nodeCount: nextGraph.nodes.length }
+              : conversation,
+          ));
+        } catch {
+          // The original structured command error remains the actionable user message.
+        }
+      } finally {
+        runInFlightRef.current = false;
+        setRunSubmitting(false);
       }
       return;
     }
 
+    const controller = new AbortController();
+    const runId = `run-mock-${Date.now()}`;
+    const transientNodeId = `node-${runId}`;
+    let completedContent = "";
+    abortControllerRef.current = controller;
     setRun(createChatRunState({
       runId,
       nodeId: transientNodeId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
       prompt,
       parentNodeId,
       branchType,
     }));
 
-    await runMockModel({
-      runId,
-      nodeId: transientNodeId,
-      prompt,
-      parentTitle,
-      signal: controller.signal,
-      onEvent: (envelope) => {
-        if (envelope.event.type === "text_delta") {
-          completedContent += envelope.event.delta;
-        }
-        setRun((current) =>
-          current?.id === runId ? reduceModelRunEnvelope(current, envelope) : current,
-        );
-      },
-    });
-
-    abortControllerRef.current = null;
-    if (controller.signal.aborted || !completedContent) return;
     try {
+      await runMockModel({
+        runId,
+        nodeId: transientNodeId,
+        prompt,
+        parentTitle,
+        signal: controller.signal,
+        onEvent: (envelope) => {
+          if (envelope.event.type === "text_delta") completedContent += envelope.event.delta;
+          setRun((current) =>
+            current?.id === runId ? reduceModelRunEnvelope(current, envelope) : current,
+          );
+        },
+      });
+      if (controller.signal.aborted || !completedContent) return;
       await persistMockCompletion(prompt, completedContent, parentNodeId, branchType);
       window.setTimeout(() => {
         setRun((current) => current?.id === runId ? null : current);
@@ -412,12 +610,37 @@ export function App() {
             }
           : current,
       );
+    } finally {
+      abortControllerRef.current = null;
+      runInFlightRef.current = false;
+      setRunSubmitting(false);
     }
   };
 
   const cancelRun = () => {
-    if (mode === "tauri" && run) {
-      void kernelClient.cancelModelRun(run.id);
+    if (!run || run.cancelRequested || (run.status !== "starting" && run.status !== "streaming")) {
+      return;
+    }
+
+    const runId = run.id;
+    setNotice(null);
+    setRun((current) => current?.id === runId ? requestChatRunCancellation(current) : current);
+
+    if (mode === "tauri") {
+      void kernelClient.cancelModelRun(runId).then((cancelled) => {
+        if (cancelled) return;
+        const message = "当前运行已经结束或无法取消，请刷新运行状态。";
+        setRun((current) => current?.id === runId
+          ? rejectChatRunCancellation(current, message)
+          : current);
+        setNotice(message);
+      }, (error) => {
+        const message = safeErrorMessage(error);
+        setRun((current) => current?.id === runId
+          ? rejectChatRunCancellation(current, message)
+          : current);
+        setNotice(message);
+      });
       return;
     }
     abortControllerRef.current?.abort();
@@ -427,8 +650,10 @@ export function App() {
   const retryRun = () => {
     if (!run) return;
     const prompt = run.prompt;
+    const retryModel = { providerId: run.providerId, modelId: run.modelId };
+    setSelectedModel(retryModel);
     setRun(null);
-    void sendPrompt(prompt);
+    void sendPrompt(prompt, retryModel);
   };
 
   const inspectContext = async (node: ConversationNode) => {
@@ -475,6 +700,11 @@ export function App() {
     }
   };
 
+  const activeModelOption = modelOptions.find(
+    (option) =>
+      option.providerId === selectedModel?.providerId && option.modelId === selectedModel.modelId,
+  );
+
   return (
     <div className="app-shell">
       <WorkspaceSidebar
@@ -485,7 +715,7 @@ export function App() {
         onToggle={() => setSidebarOpen((value) => !value)}
         onCreateConversation={() => void createConversation()}
         onSelectConversation={(conversationId) => {
-          if (abortControllerRef.current) return;
+          if (runInFlightRef.current) return;
           setRun(null);
           setSelectedConversationId(conversationId);
         }}
@@ -494,13 +724,28 @@ export function App() {
 
       <ChatWorkspace
         graph={graph}
+        modelRuns={modelRuns}
+        initialCanvasViewport={canvasViewport}
         loading={booting || graphLoading}
         sidebarOpen={sidebarOpen}
-        runtimeLabel={mode === "tauri" ? "本地内核 · 模拟模型" : "浏览器预览 · 不保存"}
+        runtimeLabel={
+          mode === "preview"
+            ? "浏览器预览 · 不保存"
+            : !activeModelOption
+              ? "本地内核 · 未选择模型"
+              : activeModelOption.isMock
+              ? "本地内核 · 本地测试模型"
+              : activeModelOption.available
+                ? "本地内核 · 真实 API"
+                : "本地内核 · 真实 API 缺少 Key"
+        }
         selectedParentId={selectedParentId}
         selectedBranchType={selectedBranchType}
         viewMode={viewMode}
         run={run}
+        runSubmitting={runSubmitting}
+        modelOptions={modelOptions}
+        selectedModel={selectedModel}
         onToggleSidebar={() => setSidebarOpen(true)}
         onSelectParent={(nodeId) => {
           setSelectedParentId(nodeId);
@@ -512,6 +757,11 @@ export function App() {
         }}
         onChangeViewMode={setViewMode}
         onMoveNode={(nodeId, position) => void moveNode(nodeId, position)}
+        onCanvasViewportChange={(conversationId, viewport) => {
+          if (mode === "tauri") {
+            viewportPersistenceRef.current?.schedule(conversationId, viewport);
+          }
+        }}
         onClearParent={() => {
           setSelectedParentId(null);
           setSelectedBranchType("continues");
@@ -520,6 +770,7 @@ export function App() {
         onSend={(prompt) => void sendPrompt(prompt)}
         onCancel={cancelRun}
         onRetry={retryRun}
+        onSelectModel={setSelectedModel}
         onInspectContext={(node) => void inspectContext(node)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -530,7 +781,20 @@ export function App() {
           <button type="button" onClick={() => setNotice(null)} aria-label="关闭错误提示">×</button>
         </div>
       ) : null}
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsDialog
+        open={settingsOpen}
+        loading={providersLoading}
+        error={providersError}
+        providers={providers}
+        credentialStatus={providerCredentials}
+        selectedModel={selectedModel}
+        onClose={() => setSettingsOpen(false)}
+        onRefresh={refreshProviderSettings}
+        onSelectModel={setSelectedModel}
+        onSaveCredential={saveProviderCredential}
+        onDeleteCredential={deleteProviderCredential}
+        onTestConnection={testProviderConnection}
+      />
       <ContextDialog
         open={contextOpen}
         loading={contextLoading}

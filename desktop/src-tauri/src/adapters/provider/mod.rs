@@ -1,13 +1,15 @@
 mod mock;
+mod openai_compatible;
 mod registry;
 mod sse;
 
 #[allow(unused_imports)]
 pub use mock::{MockProvider, MockScenario};
+pub use openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 #[allow(unused_imports)]
 pub use registry::{
-    ModelCapabilities, ProviderAdapter, ProviderDescriptor, ProviderRegistry, ProviderRuntime,
-    ProviderRuntimeError, RunCancellation,
+    ModelCapabilities, ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor,
+    ProviderRegistry, ProviderRuntime, ProviderRuntimeError, RunCancellation,
 };
 #[allow(unused_imports)]
 pub use sse::{SseDecoder, SseFrame};
@@ -148,5 +150,17 @@ mod tests {
             events.last().unwrap().event,
             ModelRunEvent::Cancelled { .. }
         ));
+    }
+
+    #[test]
+    fn connection_test_routes_to_registered_provider() {
+        let mut registry = ProviderRegistry::default();
+        registry.register(MockProvider::standard()).unwrap();
+        let result = ProviderRuntime::new(registry)
+            .test_connection("mock")
+            .expect("test mock connection");
+        assert!(result.authenticated);
+        assert_eq!(result.provider_id, "mock");
+        assert_eq!(result.available_models, vec!["mock-stream-v1"]);
     }
 }

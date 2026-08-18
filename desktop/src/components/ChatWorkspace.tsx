@@ -18,12 +18,22 @@ import {
   X,
 } from "lucide-react";
 import { presentProviderError, type ChatRunState } from "../app/chatRunState";
-import type { BranchType, ContentBlock, ConversationGraph, ConversationNode } from "../domain";
+import type { ChatModelOption } from "../app/providerCatalog";
+import type {
+  BranchType,
+  ContentBlock,
+  ConversationGraph,
+  ConversationNode,
+  ModelRunProjection,
+  ModelSelection,
+} from "../domain";
 import type { CanvasPoint, CanvasViewport } from "../canvas/graphProjection";
 import { ConversationCanvas } from "./ConversationCanvas";
 
 type ChatWorkspaceProps = {
   graph: ConversationGraph | null;
+  modelRuns: readonly ModelRunProjection[];
+  initialCanvasViewport: CanvasViewport | null;
   loading: boolean;
   sidebarOpen: boolean;
   runtimeLabel: string;
@@ -31,25 +41,24 @@ type ChatWorkspaceProps = {
   selectedBranchType: BranchType;
   viewMode: "canvas" | "chat";
   run: ChatRunState | null;
+  runSubmitting: boolean;
+  modelOptions: ChatModelOption[];
+  selectedModel: ModelSelection | null;
   onToggleSidebar: () => void;
   onSelectParent: (nodeId: string) => void;
   onSelectBranch: (nodeId: string, branchType: BranchType) => void;
   onChangeViewMode: (mode: "canvas" | "chat") => void;
   onMoveNode: (nodeId: string, position: CanvasPoint) => void;
+  onCanvasViewportChange: (conversationId: string, viewport: CanvasViewport) => void;
   onClearParent: () => void;
   onCreateConversation: () => void;
   onSend: (prompt: string) => void;
   onCancel: () => void;
   onRetry: () => void;
+  onSelectModel: (selection: ModelSelection) => void;
   onInspectContext: (node: ConversationNode) => void;
   onOpenSettings: () => void;
 };
-
-const modelOptions = [
-  { id: "mock-stream-v1", label: "本地模拟", provider: "Mock Provider", available: true },
-  { id: "openai", label: "OpenAI", provider: "等待模型网关", available: false },
-  { id: "anthropic", label: "Claude", provider: "等待模型网关", available: false },
-];
 
 function blocksToPlainText(blocks: ContentBlock[]) {
   return blocks
@@ -141,6 +150,15 @@ function ActiveRunCard({
     errorPresentation?.action === "openSettings" || errorPresentation?.action === "chooseModel";
   const retryAction =
     errorPresentation?.action === "retry" || (run.status === "failed" && run.error?.retryable);
+  const statusLabel = run.cancelRequested
+    ? "正在停止"
+    : {
+        starting: "正在启动",
+        streaming: "正在生成",
+        completed: "已完成",
+        cancelled: "已停止",
+        failed: "运行失败",
+      }[run.status];
   return (
     <article className="turn-card is-running" aria-live="polite">
       <div className="turn-question">
@@ -154,8 +172,8 @@ function ActiveRunCard({
         <span className="turn-avatar is-assistant"><Bot aria-hidden="true" /></span>
         <div className="answer-content">
           <div className="answer-heading">
-            <span>本地模拟 Provider</span>
-            <small>{run.status === "starting" ? "正在启动" : run.status}</small>
+            <span>{run.modelId} · {run.providerId === "mock" ? "本地测试" : run.providerId}</span>
+            <small>{statusLabel}</small>
           </div>
           {run.content ? <p className="answer-text is-streaming">{run.content}</p> : null}
           {run.status === "starting" ? <p className="pending-answer"><LoaderCircle aria-hidden="true" />正在准备上下文与运行请求</p> : null}
@@ -171,10 +189,16 @@ function ActiveRunCard({
               {run.errorMessage ? <small>诊断信息：{run.errorMessage}</small> : null}
             </div>
           ) : null}
+          {run.cancelErrorMessage ? (
+            <p className="protocol-warning" role="alert">停止请求未生效：{run.cancelErrorMessage}</p>
+          ) : null}
           {run.protocolWarning ? <p className="protocol-warning">事件协议提示：{run.protocolWarning}</p> : null}
           <div className="turn-actions">
             {running ? (
-              <button type="button" onClick={onCancel}><CircleStop aria-hidden="true" />停止模拟</button>
+              <button type="button" onClick={onCancel} disabled={run.cancelRequested}>
+                {run.cancelRequested ? <LoaderCircle className="spin" aria-hidden="true" /> : <CircleStop aria-hidden="true" />}
+                {run.cancelRequested ? "正在停止" : "停止生成"}
+              </button>
             ) : null}
             {run.status === "cancelled" || retryAction ? (
               <button type="button" onClick={onRetry}><RotateCcw aria-hidden="true" />重试</button>
@@ -195,14 +219,28 @@ function Composer({
   parent,
   branchType,
   disabled,
+  submitting,
+  cancelRequested,
+  modelOptions,
+  selectedModel,
   onClearParent,
+  onSelectModel,
+  onOpenSettings,
   onSend,
+  onCancel,
 }: {
   parent: ConversationNode | null;
   branchType: BranchType;
   disabled: boolean;
+  submitting: boolean;
+  cancelRequested: boolean;
+  modelOptions: ChatModelOption[];
+  selectedModel: ModelSelection | null;
   onClearParent: () => void;
+  onSelectModel: (selection: ModelSelection) => void;
+  onOpenSettings: () => void;
   onSend: (prompt: string) => void;
+  onCancel: () => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
@@ -229,6 +267,10 @@ function Composer({
     reframes: "换角度",
     importedFrom: "导入来源",
   }[branchType];
+  const selectedOption = modelOptions.find(
+    (option) =>
+      option.providerId === selectedModel?.providerId && option.modelId === selectedModel.modelId,
+  );
 
   return (
     <div className="composer-wrap">
@@ -244,20 +286,45 @@ function Composer({
 
       <div className="composer">
         <div className="model-select-wrap">
-          <button className="model-select" type="button" onClick={() => setModelOpen((value) => !value)}>
+          <button
+            className="model-select"
+            type="button"
+            onClick={() => setModelOpen((value) => !value)}
+            aria-expanded={modelOpen}
+          >
             <Bot aria-hidden="true" />
-            <span><strong>本地模拟</strong><small>不联网 · 不计费</small></span>
+            <span>
+              <strong>{selectedOption?.modelLabel ?? "选择可用模型"}</strong>
+              <small>
+                {selectedOption
+                  ? `${selectedOption.providerLabel} · ${selectedOption.availabilityLabel}`
+                  : "需要先配置 Provider"}
+              </small>
+            </span>
             <ChevronDown aria-hidden="true" />
           </button>
           {modelOpen ? (
             <div className="model-menu">
               <span className="menu-label">选择下一次运行使用的模型</span>
               {modelOptions.map((model) => (
-                <button key={model.id} type="button" disabled={!model.available} onClick={() => setModelOpen(false)}>
-                  <span><strong>{model.label}</strong><small>{model.provider}</small></span>
-                  <small>{model.available ? "可用" : "待接入"}</small>
+                <button
+                  key={`${model.providerId}:${model.modelId}`}
+                  type="button"
+                  disabled={!model.available}
+                  onClick={() => {
+                    onSelectModel({ providerId: model.providerId, modelId: model.modelId });
+                    setModelOpen(false);
+                  }}
+                >
+                  <span><strong>{model.modelLabel}</strong><small>{model.providerLabel}</small></span>
+                  <small>{model.availabilityLabel}</small>
                 </button>
               ))}
+              {modelOptions.length === 0 ? (
+                <button type="button" onClick={onOpenSettings}>
+                  <span><strong>尚无已注册模型</strong><small>打开设置检查 Provider</small></span>
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -267,7 +334,15 @@ function Composer({
           value={prompt}
           rows={1}
           disabled={disabled}
-          placeholder={disabled ? "等待当前运行结束…" : "输入现在想探索的问题…"}
+          placeholder={
+            cancelRequested
+              ? "正在停止当前生成…"
+              : submitting
+                ? "模型正在生成，可点击右侧停止按钮…"
+                : disabled
+                  ? "等待当前运行结束…"
+                  : "输入现在想探索的问题…"
+          }
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -276,17 +351,31 @@ function Composer({
             }
           }}
         />
-        <button className="send-button" type="button" onClick={submit} disabled={disabled || !prompt.trim()} aria-label="发送消息">
-          <Send aria-hidden="true" />
+        <button
+          className={`send-button${disabled ? " is-stop" : ""}`}
+          type="button"
+          onClick={disabled ? onCancel : submit}
+          disabled={disabled ? cancelRequested : !selectedOption?.available || !prompt.trim()}
+          aria-label={disabled ? (cancelRequested ? "正在停止生成" : "停止生成") : "发送消息"}
+        >
+          {disabled
+            ? cancelRequested
+              ? <LoaderCircle className="spin" aria-hidden="true" />
+              : <CircleStop aria-hidden="true" />
+            : <Send aria-hidden="true" />}
         </button>
       </div>
-      <div className="composer-hint">Enter 发送 · Shift + Enter 换行 · 当前仅使用明确标注的本地模拟 Provider</div>
+      <div className="composer-hint">
+        Enter 发送 · Shift + Enter 换行 · Mock 与真实 API 会明确区分，模型选择只影响下一次运行
+      </div>
     </div>
   );
 }
 
 export function ChatWorkspace({
   graph,
+  modelRuns,
+  initialCanvasViewport,
   loading,
   sidebarOpen,
   runtimeLabel,
@@ -294,23 +383,30 @@ export function ChatWorkspace({
   selectedBranchType,
   viewMode,
   run,
+  runSubmitting,
+  modelOptions,
+  selectedModel,
   onToggleSidebar,
   onSelectParent,
   onSelectBranch,
   onChangeViewMode,
   onMoveNode,
+  onCanvasViewportChange,
   onClearParent,
   onCreateConversation,
   onSend,
   onCancel,
   onRetry,
+  onSelectModel,
   onInspectContext,
   onOpenSettings,
 }: ChatWorkspaceProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasViewportsRef = useRef(new Map<string, CanvasViewport>());
   const parent = graph?.nodes.find((node) => node.id === selectedParentId) ?? null;
-  const running = run?.status === "starting" || run?.status === "streaming";
+  const running = run
+    ? run.status === "starting" || run.status === "streaming"
+    : runSubmitting;
 
   useEffect(() => {
     if (!run) return;
@@ -396,15 +492,21 @@ export function ChatWorkspace({
         {viewMode === "canvas" && !loading && graph ? (
           <ConversationCanvas
             graph={graph}
+            modelRuns={modelRuns}
             selectedNodeId={selectedParentId}
             run={run}
             onSelectNode={onSelectParent}
             onSelectBranch={onSelectBranch}
             onInspectContext={onInspectContext}
             onMoveNode={onMoveNode}
-            initialViewport={canvasViewportsRef.current.get(graph.conversation.id)}
+            initialViewport={
+              canvasViewportsRef.current.get(graph.conversation.id) ??
+              initialCanvasViewport ??
+              undefined
+            }
             onViewportChange={(viewport) => {
               canvasViewportsRef.current.set(graph.conversation.id, viewport);
+              onCanvasViewportChange(graph.conversation.id, viewport);
             }}
           />
         ) : null}
@@ -428,8 +530,15 @@ export function ChatWorkspace({
             parent={parent}
             branchType={selectedBranchType}
             disabled={Boolean(running)}
+            submitting={runSubmitting}
+            cancelRequested={run?.cancelRequested ?? false}
+            modelOptions={modelOptions}
+            selectedModel={selectedModel}
             onClearParent={onClearParent}
+            onSelectModel={onSelectModel}
+            onOpenSettings={onOpenSettings}
             onSend={onSend}
+            onCancel={onCancel}
           />
         ) : null}
       </div>

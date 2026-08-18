@@ -878,6 +878,15 @@ button:disabled {
   transform: translateY(-1px);
 }
 
+.send-button.is-stop {
+  color: #f3ded9;
+  background: rgba(176, 77, 63, 0.82);
+}
+
+.send-button.is-stop:hover:not(:disabled) {
+  background: rgba(196, 87, 72, 0.92);
+}
+
 .send-button:disabled {
   opacity: 0.28;
 }
@@ -999,8 +1008,11 @@ button:disabled {
 }
 
 .settings-dialog {
-  width: min(520px, 100%);
+  display: flex;
+  width: min(640px, 100%);
+  max-height: min(820px, calc(100vh - 40px));
   overflow: hidden;
+  flex-direction: column;
   background: var(--panel-raised);
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -1026,6 +1038,13 @@ button:disabled {
   display: grid;
   padding: 17px;
   gap: 10px;
+  overflow-y: auto;
+}
+
+.dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .context-dialog {
@@ -1128,6 +1147,22 @@ button:disabled {
   border-radius: 10px;
 }
 
+.provider-card.provider-config-card {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.provider-card-heading > div {
+  min-width: 0;
+  flex: 1;
+}
+
 .provider-card.is-active {
   border-color: rgba(127, 174, 142, 0.24);
 }
@@ -1178,6 +1213,155 @@ button:disabled {
   width: 12px;
   height: 12px;
   color: var(--success);
+}
+
+.provider-models {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.provider-models button {
+  display: flex;
+  min-width: 0;
+  padding: 9px 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #c9c7c2;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.provider-models button:hover:not(:disabled),
+.provider-models button.is-selected {
+  background: rgba(203, 168, 106, 0.08);
+  border-color: rgba(203, 168, 106, 0.28);
+}
+
+.provider-models button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.provider-models button span {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-models button small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.credential-editor {
+  display: grid;
+  padding-top: 11px;
+  gap: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.credential-editor label {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.credential-editor > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.credential-editor input {
+  min-width: min(220px, 100%);
+  padding: 9px 10px;
+  flex: 1;
+  color: #e8e6e2;
+  background: #111212;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  outline: none;
+}
+
+.credential-editor input:focus {
+  border-color: rgba(203, 168, 106, 0.5);
+  box-shadow: 0 0 0 2px rgba(203, 168, 106, 0.08);
+}
+
+.credential-editor button {
+  display: flex;
+  padding: 8px 10px;
+  align-items: center;
+  gap: 5px;
+  color: #dedbd5;
+  background: rgba(203, 168, 106, 0.11);
+  border: 1px solid rgba(203, 168, 106, 0.26);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.credential-editor button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.credential-editor button.danger-action {
+  color: #d7a09d;
+  background: rgba(121, 50, 48, 0.12);
+  border-color: rgba(221, 121, 113, 0.22);
+}
+
+.credential-editor button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.credential-editor > small {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.credential-editor > small.connection-result {
+  color: #9fc2a8;
+}
+
+.settings-state,
+.settings-feedback {
+  margin: 0;
+  padding: 11px 12px;
+  color: var(--muted);
+  background: var(--panel-inset);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.settings-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.settings-state svg {
+  width: 13px;
+  height: 13px;
+}
+
+.settings-feedback.is-error,
+.settings-state.is-error {
+  color: #d9a3a0;
+  border-color: rgba(221, 121, 113, 0.22);
+}
+
+.settings-feedback.is-success {
+  color: #a9c8b0;
+  border-color: rgba(127, 174, 142, 0.23);
 }
 
 .security-note {

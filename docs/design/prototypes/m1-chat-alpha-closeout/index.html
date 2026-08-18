@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MindScape M1 Chat Alpha 交互收口原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="prototype-banner">
+      <div>
+        <span class="eyebrow">员工06 · M1 视觉收口原型</span>
+        <strong>这是交互确认稿，不会写入真实会话</strong>
+      </div>
+      <div class="prototype-actions" aria-label="原型状态快捷入口">
+        <button type="button" data-scenario="blank">空白</button>
+        <button type="button" data-scenario="no-key">无 Key</button>
+        <button type="button" data-scenario="failed">失败</button>
+        <button type="button" data-scenario="recovered">恢复</button>
+        <button type="button" class="is-primary" data-scenario="reset">重置演示</button>
+      </div>
+    </div>
+
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">M</div>
+          <div><strong>MindScape</strong><span>思考工作台</span></div>
+        </div>
+        <button class="new-chat" type="button" data-scenario="reset"><span aria-hidden="true">+</span>新对话</button>
+        <nav aria-label="对话列表">
+          <span class="nav-label">今天</span>
+          <button class="conversation-row is-active" type="button">
+            <span>如何组织一次深度研究？</span><small>刚刚</small>
+          </button>
+          <button class="conversation-row" type="button">
+            <span>产品范围的取舍原则</span><small>16:20</small>
+          </button>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-label">DeepSeek 已连接</span>
+          <button type="button" aria-label="打开设置">⚙</button>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">当前对话</span>
+            <h1>如何组织一次深度研究？</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="view-switch" role="group" aria-label="视图切换">
+              <button type="button" class="is-active">画布</button>
+              <button type="button">阅读</button>
+            </div>
+            <span class="runtime-pill"><i aria-hidden="true"></i>原型模拟 · 不保存</span>
+          </div>
+        </header>
+
+        <div class="status-notice" id="status-notice" role="status" aria-live="polite" hidden>
+          <div><strong id="notice-title"></strong><span id="notice-copy"></span></div>
+          <button type="button" id="notice-action"></button>
+        </div>
+
+        <section class="canvas" id="canvas" aria-label="对话节点画布">
+          <div class="canvas-tools" aria-label="画布工具">
+            <button type="button" aria-label="缩小">−</button>
+            <span>100%</span>
+            <button type="button" aria-label="放大">+</button>
+            <button type="button">居中</button>
+          </div>
+
+          <div class="empty-state" id="empty-state">
+            <span class="empty-symbol" aria-hidden="true">✦</span>
+            <h2>从一个问题开始思考</h2>
+            <p>发送后，问题和回答会成为可继续展开的节点。</p>
+            <button type="button" id="sample-prompt">填入示例问题</button>
+          </div>
+
+          <article class="node-card" id="node-card" hidden tabindex="-1">
+            <header>
+              <span class="node-index">01</span>
+              <span class="state-chip" id="node-state">准备发送</span>
+            </header>
+            <h2 id="node-question"></h2>
+            <div class="answer" id="node-answer"></div>
+            <div class="partial-note" id="partial-note" hidden>
+              <span aria-hidden="true">■</span>已保留停止前的内容，可从此节点重试。
+            </div>
+            <footer>
+              <span id="node-meta">deepseek-chat</span>
+              <div>
+                <button type="button" id="retry-button" hidden>重试</button>
+                <button type="button" id="focus-button" disabled>聚焦阅读</button>
+              </div>
+            </footer>
+          </article>
+        </section>
+
+        <form class="composer-wrap" id="composer-form">
+          <div class="composer">
+            <textarea id="prompt" rows="2" placeholder="输入你想展开的问题…" aria-label="问题"></textarea>
+            <div class="composer-footer">
+              <button type="button" class="model-button">DeepSeek Chat <span aria-hidden="true">⌄</span></button>
+              <span class="composer-state" id="composer-state">准备就绪</span>
+              <button type="submit" class="send-button" id="send-button" aria-label="发送">↑</button>
+            </div>
+          </div>
+          <p><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</p>
+        </form>
+      </section>
+    </main>
+
+    <div class="reader-backdrop" id="reader-backdrop" hidden>
+      <section class="reader" role="dialog" aria-modal="true" aria-labelledby="reader-title" tabindex="-1">
+        <header>
+          <div><span class="eyebrow">聚焦阅读</span><h2 id="reader-title"></h2></div>
+          <button type="button" id="close-reader" aria-label="关闭阅读视图">×</button>
+        </header>
+        <div class="reader-body">
+          <div class="reader-meta"><span>DeepSeek Chat</span><span id="reader-state">已完成</span></div>
+          <div id="reader-answer"></div>
+        </div>
+        <footer><span>关闭后回到原节点位置</span><button type="button" id="reader-done">返回画布</button></footer>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

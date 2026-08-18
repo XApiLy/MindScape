@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     sync::{Arc, Mutex},
 };
 
@@ -10,16 +10,22 @@ use crate::{
     adapters::{
         CredentialService,
         provider::{
-            MockProvider, ProviderDescriptor, ProviderRegistry, ProviderRuntime,
+            MockProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+            ProviderConnectionTestResult, ProviderDescriptor, ProviderRegistry, ProviderRuntime,
             ProviderRuntimeError, RunCancellation,
         },
     },
     application::KernelService,
     domain::{
-        AppendTurnInput, CompleteTurnInput, ContextSnapshot, Conversation, ConversationGraph,
-        ConversationNode, CreateConversationInput, CredentialError, CredentialRef, KernelBootstrap,
-        KernelError, SetCredentialInput, UpdateNodePositionInput,
-        contracts::{ModelRunEventEnvelope, ModelRunRequest},
+        AppendTurnInput, CanvasViewportState, CompleteTurnInput, ContextSnapshot, Conversation,
+        ConversationGraph, ConversationNode, CreateConversationInput, CredentialError,
+        CredentialRef, KernelBootstrap, KernelError, RunState, SaveCanvasViewportInput,
+        SetCredentialInput, StartModelRunInput, UpdateNodePositionInput,
+        contracts::{
+            ModelRunEvent, ModelRunEventEnvelope, ModelRunProjection, ModelRunRequest,
+            ProviderError, ProviderErrorCategory,
+        },
+        new_id, now_timestamp,
     },
 };
 
@@ -37,6 +43,15 @@ impl KernelState {
         registry
             .register(MockProvider::standard())
             .expect("the built-in mock provider must register once");
+        registry
+            .register(
+                OpenAiCompatibleProvider::new(
+                    OpenAiCompatibleConfig::deepseek(),
+                    credentials.clone(),
+                )
+                .expect("the built-in DeepSeek provider configuration must be valid"),
+            )
+            .expect("the built-in DeepSeek provider must register once");
         Self {
             service,
             credentials,
@@ -107,10 +122,37 @@ impl From<CredentialError> for CommandError {
 
 impl From<ProviderRuntimeError> for CommandError {
     fn from(error: ProviderRuntimeError) -> Self {
+        match error {
+            ProviderRuntimeError::Provider(error) => Self::from(error),
+            ProviderRuntimeError::ProviderNotRegistered(_)
+            | ProviderRuntimeError::ModelNotRegistered { .. }
+            | ProviderRuntimeError::CapabilityUnsupported { .. } => Self {
+                code: "providerConfiguration",
+                safe_message: error.to_string(),
+                retryable: false,
+            },
+        }
+    }
+}
+
+impl From<ProviderError> for CommandError {
+    fn from(error: ProviderError) -> Self {
+        let code = match error.category {
+            ProviderErrorCategory::Authentication => "providerAuthentication",
+            ProviderErrorCategory::RateLimit => "providerRateLimit",
+            ProviderErrorCategory::InsufficientBalance => "providerBalance",
+            ProviderErrorCategory::ModelUnavailable => "providerModelUnavailable",
+            ProviderErrorCategory::InvalidRequest => "providerInvalidRequest",
+            ProviderErrorCategory::Network => "providerNetwork",
+            ProviderErrorCategory::Timeout => "providerTimeout",
+            ProviderErrorCategory::ContentPolicy => "providerContentPolicy",
+            ProviderErrorCategory::Cancelled => "providerCancelled",
+            ProviderErrorCategory::Unknown => "providerUnknown",
+        };
         Self {
-            code: "providerRuntime",
-            safe_message: error.to_string(),
-            retryable: false,
+            code,
+            safe_message: error.safe_message,
+            retryable: error.retryable,
         }
     }
 }
@@ -178,6 +220,28 @@ pub fn update_node_position(
 }
 
 #[tauri::command]
+pub fn save_canvas_viewport(
+    state: State<'_, KernelState>,
+    input: SaveCanvasViewportInput,
+) -> CommandResult<CanvasViewportState> {
+    state
+        .service
+        .save_canvas_viewport(input)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_canvas_viewport(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<Option<CanvasViewportState>> {
+    state
+        .service
+        .get_canvas_viewport(&conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn set_provider_credential(
     state: State<'_, KernelState>,
     input: SetCredentialInput,
@@ -210,6 +274,22 @@ pub fn list_providers(state: State<'_, KernelState>) -> Vec<ProviderDescriptor> 
 }
 
 #[tauri::command]
+pub async fn test_provider_connection(
+    state: State<'_, KernelState>,
+    provider_id: String,
+) -> CommandResult<ProviderConnectionTestResult> {
+    let runtime = state.provider_runtime.clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.test_connection(&provider_id))
+        .await
+        .map_err(|_| CommandError {
+            code: "runtimeUnavailable",
+            safe_message: "The provider connection test could not be completed.".into(),
+            retryable: true,
+        })?
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn run_model(
     state: State<'_, KernelState>,
     request: ModelRunRequest,
@@ -217,59 +297,182 @@ pub async fn run_model(
 ) -> CommandResult<()> {
     state.service.create_model_run(&request)?;
     let cancellation = RunCancellation::default();
-    {
-        let mut active_runs = state.active_runs.lock().map_err(|_| CommandError {
-            code: "runtimeUnavailable",
-            safe_message: "The model runtime is unavailable.".into(),
-            retryable: true,
-        })?;
-        if active_runs
-            .insert(request.run_id.clone(), cancellation.clone())
-            .is_some()
-        {
-            return Err(CommandError {
-                code: "runAlreadyActive",
-                safe_message: "This model run is already active.".into(),
-                retryable: false,
-            });
-        }
-    }
+    register_active_run(&state.active_runs, &request.run_id, cancellation.clone())?;
 
     let runtime = state.provider_runtime.clone();
     let service = state.service.clone();
     let run_id = request.run_id.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
         let mut callback_error = None;
+        let mut channel_open = true;
         let runtime_result = runtime.run(&request, &cancellation, &mut |event| {
-            if callback_error.is_some() {
-                return;
-            }
             if let Err(error) = service.record_model_run_event(&event) {
-                callback_error = Some(CommandError::from(error));
+                if callback_error.is_none() {
+                    callback_error = Some(CommandError::from(error));
+                }
+                cancellation.cancel();
                 return;
             }
-            if on_event.send(event).is_err() {
+            if channel_open && on_event.send(event).is_err() {
                 cancellation.cancel();
-                callback_error = Some(CommandError {
-                    code: "eventChannelClosed",
-                    safe_message: "The model event channel was closed.".into(),
-                    retryable: true,
-                });
+                channel_open = false;
             }
         });
+        if callback_error.is_none()
+            && let Err(error) = &runtime_result
+            && let Ok(Some(run)) = service
+                .list_model_runs(None)
+                .map(|runs| runs.into_iter().find(|run| run.run_id == request.run_id))
+            && matches!(run.state, RunState::Pending | RunState::Streaming)
+        {
+            let failed = ModelRunEventEnvelope {
+                contract_version: request.contract_version.clone(),
+                event_id: new_id("run-event"),
+                run_id: request.run_id.clone(),
+                node_id: request.node_id.clone(),
+                sequence: run.last_sequence + 1,
+                occurred_at: now_timestamp(),
+                event: ModelRunEvent::Failed {
+                    error: provider_failure(error),
+                    partial_content_retained: !run.partial_content.is_empty(),
+                },
+            };
+            if let Err(error) = service.record_model_run_event(&failed) {
+                callback_error = Some(CommandError::from(error));
+            } else if channel_open {
+                let _ = on_event.send(failed);
+            }
+        }
         callback_error.map_or_else(|| runtime_result.map_err(Into::into), Err)
     })
-    .await
-    .map_err(|_| CommandError {
-        code: "runtimeUnavailable",
-        safe_message: "The model runtime stopped unexpectedly.".into(),
-        retryable: true,
-    })?;
+    .await;
 
     if let Ok(mut active_runs) = state.active_runs.lock() {
         active_runs.remove(&run_id);
     }
-    result
+    joined.map_err(|_| CommandError {
+        code: "runtimeUnavailable",
+        safe_message: "The model runtime stopped unexpectedly.".into(),
+        retryable: true,
+    })?
+}
+
+fn register_active_run(
+    active_runs: &Arc<Mutex<HashMap<String, RunCancellation>>>,
+    run_id: &str,
+    cancellation: RunCancellation,
+) -> CommandResult<()> {
+    let mut active_runs = active_runs.lock().map_err(|_| CommandError {
+        code: "runtimeUnavailable",
+        safe_message: "The model runtime is unavailable.".into(),
+        retryable: true,
+    })?;
+    match active_runs.entry(run_id.to_owned()) {
+        Entry::Vacant(entry) => {
+            entry.insert(cancellation);
+            Ok(())
+        }
+        Entry::Occupied(_) => Err(CommandError {
+            code: "runAlreadyActive",
+            safe_message: "This model run is already active.".into(),
+            retryable: false,
+        }),
+    }
+}
+
+fn provider_failure(error: &ProviderRuntimeError) -> ProviderError {
+    match error {
+        ProviderRuntimeError::Provider(error) => error.clone(),
+        _ => ProviderError {
+            category: ProviderErrorCategory::InvalidRequest,
+            provider_code: None,
+            safe_message: error.to_string(),
+            retryable: false,
+            retry_after_ms: None,
+            provider_status: None,
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn start_model_run(
+    state: State<'_, KernelState>,
+    input: StartModelRunInput,
+    on_event: Channel<ModelRunEventEnvelope>,
+) -> CommandResult<ModelRunProjection> {
+    let model_capabilities = state
+        .provider_runtime
+        .model_capabilities(&input.provider_id, &input.model_id)?;
+    let max_context_tokens = model_context_budget(
+        model_capabilities.context_window_tokens,
+        input.budget.max_output_tokens,
+    )?;
+    let (_node, request) = state.service.prepare_model_run(input, max_context_tokens)?;
+    let run_id = request.run_id.clone();
+    if let Some(existing) = state
+        .service
+        .list_model_runs(None)?
+        .into_iter()
+        .find(|run| run.run_id == run_id)
+        && matches!(
+            existing.state,
+            RunState::Completed | RunState::Cancelled | RunState::Failed
+        )
+    {
+        return Ok(existing);
+    }
+    run_model(state.clone(), request, on_event).await?;
+    state
+        .service
+        .list_model_runs(None)?
+        .into_iter()
+        .find(|run| run.run_id == run_id)
+        .ok_or_else(|| {
+            CommandError::from(KernelError::NotFound {
+                entity: "model run",
+                id: run_id,
+            })
+        })
+}
+
+fn model_context_budget(
+    context_window_tokens: Option<u64>,
+    max_output_tokens: Option<u64>,
+) -> CommandResult<Option<i64>> {
+    context_window_tokens
+        .map(|window| {
+            let reserved_output = max_output_tokens.unwrap_or(0);
+            window
+                .checked_sub(reserved_output)
+                .filter(|available| *available > 0)
+                .ok_or_else(|| CommandError {
+                    code: "contextBudgetInvalid",
+                    safe_message:
+                        "The requested output budget must leave room for model input context."
+                            .into(),
+                    retryable: false,
+                })
+        })
+        .transpose()?
+        .map(|tokens| {
+            i64::try_from(tokens).map_err(|_| CommandError {
+                code: "contextBudgetInvalid",
+                safe_message: "The model context window is outside the supported range.".into(),
+                retryable: false,
+            })
+        })
+        .transpose()
+}
+
+#[tauri::command]
+pub fn list_model_runs(
+    state: State<'_, KernelState>,
+    conversation_id: Option<String>,
+) -> CommandResult<Vec<ModelRunProjection>> {
+    state
+        .service
+        .list_model_runs(conversation_id.as_deref())
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -292,6 +495,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn duplicate_run_registration_preserves_the_original_cancellation_handle() {
+        let active_runs = Arc::new(Mutex::new(HashMap::new()));
+        let original = RunCancellation::default();
+        let duplicate = RunCancellation::default();
+
+        register_active_run(&active_runs, "run-1", original.clone()).unwrap();
+        let error = register_active_run(&active_runs, "run-1", duplicate.clone()).unwrap_err();
+        assert_eq!(error.code, "runAlreadyActive");
+
+        active_runs.lock().unwrap().get("run-1").unwrap().cancel();
+        assert!(original.is_cancelled());
+        assert!(!duplicate.is_cancelled());
+    }
+
+    #[test]
     fn internal_storage_errors_are_not_exposed_to_the_frontend() {
         let error = CommandError::from(KernelError::Io(std::io::Error::other(
             "C:/private/user/path/mindscape.sqlite3",
@@ -300,5 +518,20 @@ mod tests {
 
         assert_eq!(error.code, "storageUnavailable");
         assert!(!json.contains("private/user/path"));
+    }
+
+    #[test]
+    fn trusted_context_window_reserves_requested_output_tokens() {
+        assert_eq!(
+            model_context_budget(Some(16_384), Some(2_048)).unwrap(),
+            Some(14_336)
+        );
+        assert_eq!(model_context_budget(None, Some(2_048)).unwrap(), None);
+
+        for (window, output) in [(1_024, 2_048), (1_024, 1_024), (0, 0)] {
+            let error = model_context_budget(Some(window), Some(output)).unwrap_err();
+            assert_eq!(error.code, "contextBudgetInvalid");
+            assert!(!error.retryable);
+        }
     }
 }

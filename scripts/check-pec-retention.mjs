@@ -5,7 +5,7 @@ import process from "node:process";
 const root = process.cwd();
 const currentDir = path.join(root, "Project Engineering Communication");
 const archiveDir = path.join(root, "Project Engineering Communication Archive");
-const employeePattern = /^员工(0[1-5])-.+-\d{8}-\d{4}\.md$/u;
+const employeePattern = /^员工(0[1-6])-.+-\d{8}-\d{4}\.md$/u;
 const controlPattern = /^(?:PEC-.+|任务派发-.+-\d{8}-\d{4})\.md$/u;
 const errors = [];
 
@@ -31,11 +31,11 @@ if (nested.length > 0) {
   errors.push(`当前 PEC 目录禁止包含子目录：${nested.join("、")}`);
 }
 
-if (files.length !== 6) {
-  errors.push(`当前 PEC 目录必须恰好有 6 个文件，实际为 ${files.length} 个。`);
+if (files.length !== 7) {
+  errors.push(`当前 PEC 目录必须恰好有 7 个文件，实际为 ${files.length} 个。`);
 }
 
-const employeeCounts = new Map(Array.from({ length: 5 }, (_, index) => [`0${index + 1}`, 0]));
+const employeeCounts = new Map(Array.from({ length: 6 }, (_, index) => [`0${index + 1}`, 0]));
 const controlFiles = [];
 
 for (const file of files) {
@@ -61,7 +61,7 @@ for (const [employee, count] of employeeCounts) {
 if (controlFiles.length !== 1) {
   errors.push(`必须且只能有 1 份规则或任务派发文件，实际为 ${controlFiles.length} 份。`);
 } else if (!controlPattern.test(controlFiles[0])) {
-  errors.push(`第六文件命名不符合规则：${controlFiles[0]}`);
+  errors.push(`第七文件命名不符合规则：${controlFiles[0]}`);
 }
 
 if (errors.length > 0) {
@@ -69,6 +69,6 @@ if (errors.length > 0) {
   for (const error of errors) console.error(`- ${error}`);
   process.exitCode = 1;
 } else {
-  console.log("PEC 当前窗口校验通过：员工01～05各一份最新报告，另有一份控制文件。");
+  console.log("PEC 当前窗口校验通过：员工01～06各一份最新报告，另有一份控制文件。");
   for (const file of files) console.log(`- ${file}`);
 }

@@ -3,6 +3,8 @@ import type {
   ContentBlock,
   ConversationGraph,
   ConversationNode,
+  ModelRunProjection,
+  ProviderError,
   RunState,
 } from "../domain";
 
@@ -32,6 +34,8 @@ export type CanvasNodeProjection = {
   providerId: string | null;
   modelId: string | null;
   runState: RunState;
+  runError: ProviderError | null;
+  partialContentRetained: boolean;
   branchType: BranchType;
   parentNodeId: string | null;
   createdAt: string;
@@ -111,30 +115,49 @@ function calculateAutomaticPositions(graph: ConversationGraph) {
 export function projectConversationGraph(
   graph: ConversationGraph,
   localPositions: ReadonlyMap<string, CanvasPoint> = new Map(),
+  modelRuns: readonly ModelRunProjection[] = [],
 ): CanvasGraphProjection {
   const persistedPositions = new Map(
     graph.positions.map((position) => [position.nodeId, { x: position.x, y: position.y }]),
   );
+  const runsByNodeId = new Map<string, ModelRunProjection>();
+  for (const run of modelRuns) {
+    const current = runsByNodeId.get(run.nodeId);
+    if (!current || current.updatedAt.localeCompare(run.updatedAt) <= 0) {
+      runsByNodeId.set(run.nodeId, run);
+    }
+  }
   const automaticPositions = calculateAutomaticPositions(graph);
 
   return {
-    nodes: graph.nodes.map((node) => ({
-      id: node.id,
-      title: node.title,
-      question: blocksToPlainText(node.userMessage.contentBlocks),
-      answer: node.assistantMessage ? blocksToPlainText(node.assistantMessage.contentBlocks) : null,
-      providerId: node.providerId,
-      modelId: node.modelId,
-      runState: node.runState,
-      branchType: node.branchType,
-      parentNodeId: node.parentNodeId,
-      createdAt: node.createdAt,
-      position:
-        localPositions.get(node.id) ??
-        persistedPositions.get(node.id) ??
-        automaticPositions.get(node.id) ??
-        { x: 112, y: 116 },
-    })),
+    nodes: graph.nodes.map((node) => {
+      const run = runsByNodeId.get(node.id);
+      const persistedAnswer = node.assistantMessage
+        ? blocksToPlainText(node.assistantMessage.contentBlocks)
+        : null;
+      const failedEvent = run?.terminalEvent?.type === "failed" ? run.terminalEvent : null;
+      const cancelledEvent = run?.terminalEvent?.type === "cancelled" ? run.terminalEvent : null;
+      return {
+        id: node.id,
+        title: node.title,
+        question: blocksToPlainText(node.userMessage.contentBlocks),
+        answer: persistedAnswer ?? (run?.partialContent || null),
+        providerId: run?.providerId ?? node.providerId,
+        modelId: run?.modelId ?? node.modelId,
+        runState: run?.state ?? node.runState,
+        runError: failedEvent?.error ?? null,
+        partialContentRetained:
+          failedEvent?.partialContentRetained ?? cancelledEvent?.partialContentRetained ?? false,
+        branchType: node.branchType,
+        parentNodeId: node.parentNodeId,
+        createdAt: node.createdAt,
+        position:
+          localPositions.get(node.id) ??
+          persistedPositions.get(node.id) ??
+          automaticPositions.get(node.id) ??
+          { x: 112, y: 116 },
+      };
+    }),
     edges: graph.edges.map((edge) => ({
       id: edge.id,
       sourceNodeId: edge.sourceNodeId,

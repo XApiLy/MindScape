@@ -29,7 +29,7 @@ MindScape 是一个模型无关的 AI 工作空间。它帮助用户表达意图
 - [产品内核与工程总览](docs/core-kernel-overview.md)
 - [第一版任务拆分与团队分配](docs/v1-work-breakdown.md)
 - [V1 前五名员工任务分配](docs/v1-first-five-assignments.md)
-- [V1 跨团队契约基线 RC1](docs/contracts/v1-contract-baseline.md)
+- [V1 跨团队契约基线](docs/contracts/v1-contract-baseline.md)
 - [V1 安全威胁模型](docs/architecture/v1-threat-model.md)
 - [V1 架构走查清单](docs/architecture/v1-architecture-walkthrough.md)
 
@@ -41,4 +41,4 @@ MindScape 是一个模型无关的 AI 工作空间。它帮助用户表达意图
 2. 会影响产品定位、交互、架构或范围的选择写入 `decisions.md`。
 3. 每轮讨论的新增观点、分歧和待办写入 `discussion-log.md`。
 4. 未确定的内容明确标记为“待决策”，不伪装成已经达成的结论。
-5. `Project Engineering Communication/` 只保留员工01～05各自最新 PEC 和一个控制文件；旧 PEC 原样移动到独立归档目录。
+5. `Project Engineering Communication/` 只保留员工01～06各自最新 PEC 和一个控制文件；员工06固定为视觉与交互设计工程师，旧 PEC 原样移动到独立归档目录。

@@ -21,7 +21,11 @@ Desktop.ini
 
 # Rust / Tauri generated output
 **/target/
+**/target-fixed/
 **/src-tauri/gen/schemas/
+
+# Local Windows validation artifacts
+desktop/MindScape-DeepSeek-Fixed.exe
 
 # Logs and temporary files
 *.log

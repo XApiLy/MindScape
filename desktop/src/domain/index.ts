@@ -6,4 +6,6 @@ export type * from "./conversation";
 export type * from "./events";
 export type * from "./evidence";
 export type * from "./imports";
+export type * from "./provider";
 export type * from "./runtime";
+export { APPLICATION_INTERRUPTED_PROVIDER_CODE } from "./runtime";

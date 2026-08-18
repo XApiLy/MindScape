@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>MindScape Review Lab</title>
+    <link rel="icon" href="/mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <header class="brand">
+          <div class="brand-mark"><span></span><span></span><span></span></div>
+          <div>
+            <strong>Review Lab</strong>
+            <small>MindScape development</small>
+          </div>
+        </header>
+
+        <button class="primary-action" id="open-create" type="button">
+          <span class="plus">＋</span>
+          添加可讨论版本
+        </button>
+
+        <div class="section-heading">
+          <span>讨论版本</span>
+          <span class="count" id="version-count">0</span>
+        </div>
+        <nav class="version-list" id="version-list" aria-label="版本时间线"></nav>
+
+        <footer class="system-card" id="system-card">
+          <div class="system-line"><span class="pulse"></span><span>正在读取工程状态…</span></div>
+        </footer>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="version-heading">
+            <div class="eyebrow" id="version-eyebrow">尚未选择版本</div>
+            <h1 id="version-title">建立第一个评审版本</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="quiet-button point-button" id="point-detail" type="button" disabled>◎ 指向界面细节</button>
+            <button class="quiet-button" id="show-log" type="button" disabled>构建记录</button>
+            <button class="quiet-button" id="toggle-compare" type="button" disabled>
+              <span class="compare-icon">◫</span> 对比版本
+            </button>
+            <button class="launch-button" id="launch-version" type="button" hidden>
+              启动完整版本 <span>↗</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="review-stage" id="review-stage">
+          <div class="empty-state" id="empty-state">
+            <div class="empty-orbit"><span></span><span></span><i></i></div>
+            <p class="empty-kicker">SHARED VISUAL CONTEXT</p>
+            <h2>让每次讨论都指向<br />同一个界面细节</h2>
+            <p>软件版本只是稳定的视觉底图。打开版本、指向细节并复制短引用，你、员工06和其他员工看到的就不会是不同位置。</p>
+            <button class="primary-action centered" id="empty-create" type="button">添加第一个讨论版本</button>
+          </div>
+
+          <div class="preview-layout" id="preview-layout" hidden>
+            <div class="preview-column">
+              <div class="preview-toolbar">
+                <div class="traffic-lights"><span></span><span></span><span></span></div>
+                <div class="preview-label"><span id="primary-label">当前版本</span><small id="primary-device">1280 × 800</small></div>
+                <button class="icon-button" id="reload-primary" type="button" title="重新载入预览">↻</button>
+              </div>
+              <div class="preview-surface" id="primary-surface">
+                <iframe id="primary-preview" title="当前版本预览"></iframe>
+                <div class="annotation-layer" id="annotation-layer" aria-label="界面细节标记层"></div>
+                <div class="build-state" id="primary-build-state" hidden></div>
+              </div>
+            </div>
+
+            <div class="preview-column compare-column" id="compare-column" hidden>
+              <div class="preview-toolbar">
+                <div class="traffic-lights muted"><span></span><span></span><span></span></div>
+                <label class="compare-select-wrap">
+                  <span>对比</span>
+                  <select id="compare-select" aria-label="选择对比版本"></select>
+                </label>
+                <button class="icon-button" id="reload-compare" type="button" title="重新载入对比预览">↻</button>
+              </div>
+              <div class="preview-surface">
+                <iframe id="compare-preview" title="历史版本预览"></iframe>
+                <div class="build-state" id="compare-build-state" hidden></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <div class="inspector-empty" id="inspector-empty">
+          <span>◎</span>
+          <p>选择版本后在这里查看推进说明与评审记录。</p>
+        </div>
+
+        <div id="inspector-content" hidden>
+          <section class="inspector-section overview-section">
+            <div class="status-row">
+              <span class="status-pill" id="detail-status">等待构建</span>
+              <span class="build-kind" id="detail-build-kind">轻量预览</span>
+            </div>
+            <h2 id="detail-title"></h2>
+            <p class="summary" id="detail-summary"></p>
+            <dl class="metadata">
+              <div><dt>提交员工</dt><dd id="detail-author"></dd></div>
+              <div><dt>代码版本</dt><dd id="detail-commit"></dd></div>
+              <div><dt>创建时间</dt><dd id="detail-time"></dd></div>
+              <div><dt>触发方式</dt><dd id="detail-trigger"></dd></div>
+              <div><dt>工作区</dt><dd id="detail-dirty"></dd></div>
+            </dl>
+          </section>
+
+          <section class="inspector-section focus-section" id="focus-section">
+            <div class="section-title">本轮请重点确认</div>
+            <p id="detail-focus"></p>
+          </section>
+
+          <section class="inspector-section anchors-section">
+            <div class="section-title row-title"><span>界面细节引用</span><span id="anchor-count">0</span></div>
+            <div class="anchor-list" id="anchor-list"></div>
+          </section>
+
+          <section class="inspector-section reviews-section">
+            <div class="section-title row-title"><span>评审记录</span><span id="review-count">0</span></div>
+            <div class="review-list" id="review-list"></div>
+
+            <form class="review-form" id="review-form">
+              <label>
+                <span>结论</span>
+                <select name="verdict" required>
+                  <option value="approved">确认方向</option>
+                  <option value="changes_requested">需要修改</option>
+                  <option value="rejected">明确否决</option>
+                  <option value="deferred">后置处理</option>
+                </select>
+              </label>
+              <label>
+                <span>具体反馈</span>
+                <textarea name="note" rows="4" placeholder="说明保留什么、修改什么，以及你希望看到的结果…" required></textarea>
+              </label>
+              <div class="review-submit-row">
+                <input name="author" value="项目负责人" aria-label="评审人" required />
+                <button type="submit">记录结论</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </aside>
+    </div>
+
+    <dialog id="create-dialog" class="modal">
+      <form method="dialog" class="modal-card" id="create-form">
+        <header>
+          <div>
+            <div class="eyebrow">CREATE REVIEW VERSION</div>
+            <h2>添加可讨论版本</h2>
+          </div>
+          <button class="close-button" value="cancel" formnovalidate aria-label="关闭">×</button>
+        </header>
+        <p class="modal-intro">只在员工认为本轮已经形成可判断的界面推进时创建。构建期间继续修改源码会被标记为风险。</p>
+        <label>
+          <span>版本名称</span>
+          <input name="title" maxlength="80" placeholder="例如：Chat 流式状态第一版" required />
+        </label>
+        <div class="form-grid">
+          <label>
+            <span>提交员工</span>
+            <input name="author" maxlength="40" value="员工06" required />
+          </label>
+          <label>
+            <span>构建等级</span>
+            <select name="buildMode">
+              <option value="preview">轻量交互预览</option>
+              <option value="full">关键版本＋完整 Windows 构建</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>本次推进内容</span>
+          <textarea name="summary" rows="4" maxlength="1200" placeholder="简明说明相比上一个版本发生了什么变化…" required></textarea>
+        </label>
+        <label>
+          <span>请负责人重点确认</span>
+          <textarea name="focus" rows="3" maxlength="600" placeholder="例如：流式反馈节奏、停止按钮的位置、节点生成过渡"></textarea>
+        </label>
+        <div class="modal-actions">
+          <span class="form-message" id="create-message"></span>
+          <button class="quiet-button" value="cancel" formnovalidate>取消</button>
+          <button class="primary-action compact" id="create-submit" value="default">开始构建</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="log-dialog" class="modal log-modal">
+      <div class="modal-card">
+        <header>
+          <div><div class="eyebrow">BUILD OUTPUT</div><h2>构建记录</h2></div>
+          <button class="close-button" id="close-log" aria-label="关闭">×</button>
+        </header>
+        <pre id="build-log">正在读取…</pre>
+      </div>
+    </dialog>
+
+    <dialog id="anchor-dialog" class="modal anchor-modal">
+      <form method="dialog" class="modal-card" id="anchor-form">
+        <header>
+          <div><div class="eyebrow">VISUAL REFERENCE</div><h2>指向这个界面细节</h2></div>
+          <button class="close-button" value="cancel" formnovalidate aria-label="关闭">×</button>
+        </header>
+        <p class="modal-intro">这个引用会绑定到当前历史版本和点击位置。复制引用 ID 到你与员工06的对话中，双方看到的是同一个细节。</p>
+        <div class="element-context" id="element-context">正在识别点击位置…</div>
+        <div class="form-grid">
+          <label>
+            <span>指向人</span>
+            <input name="author" value="项目负责人" maxlength="40" required />
+          </label>
+          <label>
+            <span>当时的界面状态</span>
+            <input name="viewLabel" maxlength="100" placeholder="例如：正在流式输出" />
+          </label>
+        </div>
+        <label>
+          <span>这个细节是什么</span>
+          <input name="title" maxlength="100" placeholder="例如：底部停止按钮" required />
+        </label>
+        <label>
+          <span>希望讨论或确认什么</span>
+          <textarea name="note" rows="4" maxlength="2000" placeholder="例如：这里的停止反馈是否太弱？我希望点击后立刻出现明确但不打扰阅读的状态变化。" required></textarea>
+        </label>
+        <div class="modal-actions">
+          <span class="form-message" id="anchor-message"></span>
+          <button class="quiet-button" value="cancel" formnovalidate>取消</button>
+          <button class="primary-action compact" id="anchor-submit" value="default">生成视觉引用</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

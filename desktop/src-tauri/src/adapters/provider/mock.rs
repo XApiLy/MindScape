@@ -6,7 +6,10 @@ use crate::domain::contracts::{
 };
 use crate::domain::{new_id, now_timestamp};
 
-use super::{ModelCapabilities, ProviderAdapter, ProviderDescriptor, RunCancellation};
+use super::{
+    ModelCapabilities, ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor,
+    RunCancellation,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockScenario {
@@ -69,6 +72,15 @@ impl MockProvider {
 impl ProviderAdapter for MockProvider {
     fn descriptor(&self) -> &ProviderDescriptor {
         &self.descriptor
+    }
+
+    fn test_connection(&self) -> Result<ProviderConnectionTestResult, ProviderError> {
+        Ok(ProviderConnectionTestResult {
+            provider_id: self.descriptor.id.clone(),
+            authenticated: true,
+            available_models: self.descriptor.models.keys().cloned().collect(),
+            checked_at: now_timestamp(),
+        })
     }
 
     fn run(

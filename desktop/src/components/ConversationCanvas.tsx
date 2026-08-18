@@ -24,7 +24,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent,
 } from "react";
-import type { BranchType, ConversationGraph, ConversationNode, RunState } from "../domain";
+import type {
+  BranchType,
+  ConversationGraph,
+  ConversationNode,
+  ModelRunProjection,
+  ProviderError,
+  RunState,
+} from "../domain";
 import {
   CANVAS_NODE_HEIGHT,
   CANVAS_NODE_WIDTH,
@@ -35,6 +42,12 @@ import {
   type CanvasPoint,
   type CanvasViewport,
 } from "../canvas/graphProjection";
+import {
+  centerCanvasViewportOnPoint,
+  clampCanvasZoom,
+  panCanvasViewport,
+  zoomCanvasViewportAtPoint,
+} from "../canvas/canvasViewport";
 import "./conversationCanvas.css";
 
 type CanvasRunView = {
@@ -45,11 +58,16 @@ type CanvasRunView = {
   branchType?: BranchType;
   content: string;
   status: "starting" | "streaming" | "completed" | "cancelled" | "failed";
+  providerId: string;
+  modelId: string;
+  error?: ProviderError | null;
   errorMessage?: string | null;
+  partialContentRetained?: boolean;
 };
 
 type ConversationCanvasProps = {
   graph: ConversationGraph;
+  modelRuns: readonly ModelRunProjection[];
   selectedNodeId: string | null;
   run: CanvasRunView | null;
   onSelectNode: (nodeId: string) => void;
@@ -90,8 +108,6 @@ const RUN_LABEL: Record<RunState, string> = {
   cancelled: "已停止",
   failed: "运行失败",
 };
-
-const clampZoom = (zoom: number) => Math.min(1.55, Math.max(0.42, zoom));
 
 function edgePath(source: CanvasNodeProjection, target: CanvasNodeProjection) {
   const startX = source.position.x + CANVAS_NODE_WIDTH;
@@ -171,15 +187,21 @@ function CanvasNodeCard({
           <span><Sparkles aria-hidden="true" />{node.modelId ?? "等待模型"}</span>
           <time>{formatNodeTime(node.createdAt)}</time>
         </div>
-        {node.answer ? (
-          <p>{node.answer}</p>
-        ) : node.runState === "failed" ? (
+        {node.answer ? <p>{node.answer}</p> : node.runState === "failed" ? (
           <p className="canvas-node-error">本次运行失败，错误已作为状态保留。</p>
         ) : node.runState === "cancelled" ? (
           <p className="canvas-node-muted">生成已停止，已有内容将按运行策略处理。</p>
         ) : (
           <p className="canvas-node-muted"><span className="canvas-stream-cursor" />正在等待回答内容…</p>
         )}
+        {node.answer && node.runError ? (
+          <p className="canvas-node-error">{node.runError.safeMessage}</p>
+        ) : null}
+        {node.answer && node.runState === "cancelled" ? (
+          <p className="canvas-node-muted">
+            {node.partialContentRetained ? "生成已停止，以上部分内容已保留。" : "生成已停止。"}
+          </p>
+        ) : null}
       </div>
 
       <div className="canvas-node-actions">
@@ -291,6 +313,12 @@ function CanvasFocusReader({
             ) : (
               <p className="canvas-node-muted">当前节点尚无可阅读的回答内容。</p>
             )}
+            {node.runError ? <p className="canvas-node-error">{node.runError.safeMessage}</p> : null}
+            {node.runState === "cancelled" ? (
+              <p className="canvas-node-muted">
+                {node.partialContentRetained ? "生成已停止，以上部分内容已保留。" : "生成已停止。"}
+              </p>
+            ) : null}
           </section>
         </div>
 
@@ -313,6 +341,7 @@ function CanvasFocusReader({
 
 export function ConversationCanvas({
   graph,
+  modelRuns,
   selectedNodeId,
   run,
   onSelectNode,
@@ -331,7 +360,6 @@ export function ConversationCanvas({
   const [interaction, setInteraction] = useState<PointerInteraction | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const revealedRunIdRef = useRef<string | null>(null);
-
   useEffect(() => {
     localPositionsRef.current = new Map();
     setLocalPositions(new Map());
@@ -352,8 +380,8 @@ export function ConversationCanvas({
   };
 
   const projection = useMemo(
-    () => projectConversationGraph(graph, localPositions),
-    [graph, localPositions],
+    () => projectConversationGraph(graph, localPositions, modelRuns),
+    [graph, localPositions, modelRuns],
   );
 
   const domainNodes = useMemo(
@@ -368,8 +396,12 @@ export function ConversationCanvas({
       return projection.nodes.map((node) => node.id === run.nodeId
         ? {
             ...node,
-            answer: run.content || node.answer,
-            runState: nodeRunState(run),
+             answer: run.content || node.answer,
+             runState: nodeRunState(run),
+             providerId: run.providerId,
+             modelId: run.modelId,
+             runError: run.error ?? null,
+             partialContentRetained: run.partialContentRetained ?? false,
           }
         : node);
     }
@@ -380,9 +412,11 @@ export function ConversationCanvas({
       title: run.prompt.length > 34 ? `${run.prompt.slice(0, 34)}…` : run.prompt,
       question: run.prompt,
       answer: run.content || null,
-      providerId: "mock",
-      modelId: "mock-stream-v1",
+      providerId: run.providerId,
+      modelId: run.modelId,
       runState: nodeRunState(run),
+      runError: run.error ?? null,
+      partialContentRetained: run.partialContentRetained ?? false,
       branchType: run.branchType ?? "continues",
       parentNodeId: run.parentNodeId,
       createdAt: new Date().toISOString(),
@@ -418,11 +452,14 @@ export function ConversationCanvas({
     const runningNode = nodesById.get(run.nodeId);
     if (!surface || !runningNode) return;
     revealedRunIdRef.current = run.id;
-    updateViewport((current) => ({
-      ...current,
-      x: surface.clientWidth / 2 - (runningNode.position.x + CANVAS_NODE_WIDTH / 2) * current.zoom,
-      y: surface.clientHeight / 2 - (runningNode.position.y + CANVAS_NODE_HEIGHT / 2) * current.zoom,
-    }));
+    updateViewport((current) => centerCanvasViewportOnPoint(
+      current,
+      { width: surface.clientWidth, height: surface.clientHeight },
+      {
+        x: runningNode.position.x + CANVAS_NODE_WIDTH / 2,
+        y: runningNode.position.y + CANVAS_NODE_HEIGHT / 2,
+      },
+    ));
   }, [run?.id, run?.nodeId, nodesById]);
 
   const updateLocalPosition = (nodeId: string, position: CanvasPoint) => {
@@ -447,7 +484,7 @@ export function ConversationCanvas({
     const padding = 104;
     const width = bounds.maxX - bounds.minX;
     const height = bounds.maxY - bounds.minY;
-    const zoom = clampZoom(Math.min(
+    const zoom = clampCanvasZoom(Math.min(
       (surface.clientWidth - padding * 2) / Math.max(width, 1),
       (surface.clientHeight - padding * 2) / Math.max(height, 1),
       1,
@@ -463,28 +500,24 @@ export function ConversationCanvas({
     const surface = surfaceRef.current;
     const selected = visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes.at(-1);
     if (!surface || !selected) return;
-    updateViewport((current) => ({
-      ...current,
-      x: surface.clientWidth / 2 - (selected.position.x + CANVAS_NODE_WIDTH / 2) * current.zoom,
-      y: surface.clientHeight / 2 - (selected.position.y + CANVAS_NODE_HEIGHT / 2) * current.zoom,
-    }));
+    updateViewport((current) => centerCanvasViewportOnPoint(
+      current,
+      { width: surface.clientWidth, height: surface.clientHeight },
+      {
+        x: selected.position.x + CANVAS_NODE_WIDTH / 2,
+        y: selected.position.y + CANVAS_NODE_HEIGHT / 2,
+      },
+    ));
   };
 
   const zoomAtCenter = (delta: number) => {
     const surface = surfaceRef.current;
     if (!surface) return;
-    updateViewport((current) => {
-      const zoom = clampZoom(current.zoom + delta);
-      const centerX = surface.clientWidth / 2;
-      const centerY = surface.clientHeight / 2;
-      const worldX = (centerX - current.x) / current.zoom;
-      const worldY = (centerY - current.y) / current.zoom;
-      return {
-        zoom,
-        x: centerX - worldX * zoom,
-        y: centerY - worldY * zoom,
-      };
-    });
+    updateViewport((current) => zoomCanvasViewportAtPoint(
+      current,
+      current.zoom + delta,
+      { x: surface.clientWidth / 2, y: surface.clientHeight / 2 },
+    ));
   };
 
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
@@ -494,16 +527,11 @@ export function ConversationCanvas({
     const rect = surface.getBoundingClientRect();
     const pointerX = event.clientX - rect.left;
     const pointerY = event.clientY - rect.top;
-    updateViewport((current) => {
-      const zoom = clampZoom(current.zoom * (event.deltaY > 0 ? 0.92 : 1.08));
-      const worldX = (pointerX - current.x) / current.zoom;
-      const worldY = (pointerY - current.y) / current.zoom;
-      return {
-        zoom,
-        x: pointerX - worldX * zoom,
-        y: pointerY - worldY * zoom,
-      };
-    });
+    updateViewport((current) => zoomCanvasViewportAtPoint(
+      current,
+      current.zoom * (event.deltaY > 0 ? 0.92 : 1.08),
+      { x: pointerX, y: pointerY },
+    ));
   };
 
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -540,11 +568,10 @@ export function ConversationCanvas({
     const deltaX = event.clientX - interaction.startClient.x;
     const deltaY = event.clientY - interaction.startClient.y;
     if (interaction.type === "pan") {
-      updateViewport((current) => ({
-        ...current,
-        x: interaction.startViewport.x + deltaX,
-        y: interaction.startViewport.y + deltaY,
-      }));
+      updateViewport((current) => panCanvasViewport(
+        { ...current, ...interaction.startViewport },
+        { x: deltaX, y: deltaY },
+      ));
       return;
     }
     updateLocalPosition(interaction.nodeId, {

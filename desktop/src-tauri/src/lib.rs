@@ -22,6 +22,9 @@ pub fn run() {
             let service =
                 KernelService::open_with_backup_dir(&data_paths.database, &data_paths.backups)
                     .map_err(|error| io::Error::other(error.to_string()))?;
+            service
+                .recover_interrupted_runs()
+                .map_err(|error| io::Error::other(error.to_string()))?;
             app.manage(KernelState::new(service, CredentialService::os_default()));
             Ok(())
         })
@@ -33,11 +36,16 @@ pub fn run() {
             commands::complete_turn,
             commands::get_context_snapshot,
             commands::update_node_position,
+            commands::save_canvas_viewport,
+            commands::get_canvas_viewport,
             commands::set_provider_credential,
             commands::has_provider_credential,
             commands::delete_provider_credential,
             commands::list_providers,
+            commands::test_provider_connection,
             commands::run_model,
+            commands::start_model_run,
+            commands::list_model_runs,
             commands::cancel_model_run,
         ])
         .run(tauri::generate_context!())

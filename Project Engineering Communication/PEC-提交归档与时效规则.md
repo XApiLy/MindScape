@@ -4,20 +4,31 @@
 >
 > 权威制度：[PEC 当前窗口与归档制度](../docs/engineering/pec-retention-policy.md)
 
+## 当前工程派单：真实 Chat Alpha
+
+全员先阅读 [V1 总开发路线与责任归属](../docs/engineering/v1-master-roadmap-and-ownership.md)，理解 M0～M5 的先后关系和自己贯穿 V1 的固定责任。员工01～05自 2026-08-18 起只执行其中的 [M1：真实 Chat Alpha 派单](../docs/engineering/v1-execution-dispatch-20260817.md)；员工06并行负责视觉、特效、交互原型和真实应用视觉验收。本轮只交付一个真实 Provider 的可运行、可停止、可恢复 Chat 纵向闭环；DeepSeek Harness、导入器、多厂商并行、Skill / MCP、整体视觉重构和 P1 功能不得占用当前 WIP。
+
+关键时间：2026-08-18 提交阅读回执与开工 PEC，2026-08-20 建立 Draft PR，2026-08-22 首次真实 DeepSeek 联调，2026-08-24 统一 Alpha 验收。具体责任、分支建议、评审人和 No-Go 条件以派单正文为准。
+
+员工06固定承担 [视觉与交互设计工程师](../docs/design/visual-interaction-design-engineer.md) 席位，直接与创始人实时确认视觉、特效和交互，再与员工03、04共同落地。员工03、04继续负责各自工程正确性与性能，不自行建立另一套设计语言。员工06与其他员工一样维护唯一最新 PEC，因此当前窗口调整为七文件。
+
 ## 全员通知：下一次推进前必须完成阅读
 
-员工01～05在继续修改方案、开始下一项任务或提交下一份 PEC 前，必须完成以下阅读。阅读的目的不是打勾，而是确认自己的实现不会违反产品边界、内核契约和协作规则。
+员工01～06在继续修改方案、开始下一项任务或提交下一份 PEC 前，必须完成以下阅读。阅读的目的不是打勾，而是确认自己的实现不会违反产品边界、内核契约和协作规则。
 
 ### 全员必读
 
 1. [第一版产品规划与范围边界](../docs/v1-product-scope.md)：确认 V1 做什么、不做什么和发布门槛。
-2. [产品内核与工程总览](../docs/core-kernel-overview.md)：理解会话图、冻结上下文、模型运行、导入和证据之间的关系。
-3. [V1 前五名员工任务分配](../docs/v1-first-five-assignments.md)：重点阅读自己的责任、WIP 上限、依赖和禁止事项。
-4. [V1 跨团队契约基线 RC1](../docs/contracts/v1-contract-baseline.md)：确认领域对象、事件、错误、导入和证据的统一含义。
-5. [V1 安全威胁模型](../docs/architecture/v1-threat-model.md)：确认密钥、导入内容、日志、文件和用户数据边界。
-6. [Git 提交、评审与合并规范](../docs/engineering/git-workflow.md)：确认分支、提交、PR、评审、合并和回滚方式。
-7. [PEC 当前窗口与归档制度](../docs/engineering/pec-retention-policy.md)：确认新 PEC 与旧 PEC 的原子替换流程。
-8. 当前 PEC 目录内其他四名员工的最新报告：只读当前报告，理解接口变化、阻塞和对自己的协作请求；历史细节再按需进入归档目录追溯。
+2. [当前产品共识](../docs/product-foundation.md)：重点阅读 2026-08-17 确认的 Chat AI 长期边界。
+3. [V1 总开发路线与责任归属](../docs/engineering/v1-master-roadmap-and-ownership.md)：理解 M0～M5 顺序、阶段出口和贯穿责任。
+4. [本轮真实 Chat Alpha 派单](../docs/engineering/v1-execution-dispatch-20260817.md)：确认当前唯一主交付、时间、依赖与验收。
+5. [产品内核与工程总览](../docs/core-kernel-overview.md)：理解会话图、冻结上下文、模型运行、导入和证据之间的关系。
+6. [V1 前五名员工任务分配](../docs/v1-first-five-assignments.md)：重点阅读自己的长期责任、WIP 上限、依赖和禁止事项。
+7. [V1 跨团队契约基线 RC1](../docs/contracts/v1-contract-baseline.md)：确认领域对象、事件、错误、导入和证据的统一含义。
+8. [V1 安全威胁模型](../docs/architecture/v1-threat-model.md)：确认密钥、导入内容、日志、文件和用户数据边界。
+9. [Git 提交、评审与合并规范](../docs/engineering/git-workflow.md)：确认分支、提交、PR、评审、合并和回滚方式。
+10. [PEC 当前窗口与归档制度](../docs/engineering/pec-retention-policy.md)：确认新 PEC 与旧 PEC 的原子替换流程。
+11. 当前 PEC 目录内其他五名员工的最新报告：只读当前报告，理解接口变化、阻塞和对自己的协作请求；历史细节再按需进入归档目录追溯。
 
 ### 按职责重点阅读
 
@@ -26,6 +37,7 @@
 - **员工03｜无限画布**：重点阅读内核总览中的会话图、语义边和 UI 非真相原则，以及员工01、员工02、员工04当前 PEC。
 - **员工04｜Chat 与工作区**：重点阅读运行事件、ContextSnapshot 和错误契约，以及员工01、员工03、员工05当前 PEC。
 - **员工05｜Provider 运行时**：重点阅读运行请求/事件、取消、错误、安全凭据和脱敏要求，以及员工01、员工02、员工04当前 PEC。
+- **员工06｜视觉与交互设计**：重点阅读 [视觉与交互设计工程师职责](../docs/design/visual-interaction-design-engineer.md)、产品范围、当前 M1 派单，以及员工03、员工04当前 PEC；直接与创始人确认体验方向并记录确认、否决和待验证内容。
 
 ### 下一份 PEC 的阅读回执
 
@@ -39,14 +51,15 @@
 
 ## 当前目录硬性约束
 
-`Project Engineering Communication/` 必须始终且只能包含 6 个 Markdown 文件：
+`Project Engineering Communication/` 必须始终且只能包含 7 个 Markdown 文件：
 
 1. 员工01最新 PEC 一份。
 2. 员工02最新 PEC 一份。
 3. 员工03最新 PEC 一份。
 4. 员工04最新 PEC 一份。
 5. 员工05最新 PEC 一份。
-6. 当前规则文件或当前任务派发文件一份。
+6. 员工06最新 PEC 一份。
+7. 当前规则文件或当前任务派发文件一份。
 
 此目录禁止建立子目录，禁止同时保留同一员工的两份报告，禁止把旧报告直接删除。
 

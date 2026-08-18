@@ -11,9 +11,9 @@ pub use imports::{
     ImportSource, ImportedMessage, ParseReport, RecoveryStatus,
 };
 pub use runtime::{
-    CapabilityRequirement, FinishReason, ModelRunBudget, ModelRunEvent, ModelRunEventEnvelope,
-    ModelRunRequest, ModelUsage, ProviderError, ProviderErrorCategory, RUNTIME_CONTRACT_VERSION,
-    RunCancelReason,
+    APPLICATION_INTERRUPTED_PROVIDER_CODE, CapabilityRequirement, FinishReason, ModelRunBudget,
+    ModelRunEvent, ModelRunEventEnvelope, ModelRunProjection, ModelRunRequest, ModelUsage,
+    ProviderError, ProviderErrorCategory, RUNTIME_CONTRACT_VERSION, RunCancelReason,
 };
 
 pub const DOMAIN_CONTRACT_VERSION: &str = "mindscape.domain.v1";
@@ -23,7 +23,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::domain::{ContentBlock, MessageRole};
+    use crate::domain::{ContentBlock, MessageRole, RunState};
 
     #[test]
     fn model_run_events_have_stable_discriminators() {
@@ -49,6 +49,37 @@ mod tests {
         assert_eq!(failed["error"]["category"], "authentication");
         assert_eq!(failed["partialContentRetained"], false);
         assert!(failed.get("rawResponse").is_none());
+    }
+
+    #[test]
+    fn terminal_events_have_one_domain_state_mapping() {
+        let completed = ModelRunEvent::Completed {
+            finish_reason: FinishReason::Stop,
+            usage: ModelUsage::default(),
+        };
+        let cancelled = ModelRunEvent::Cancelled {
+            reason: RunCancelReason::UserRequested,
+            partial_content_retained: true,
+        };
+        let interrupted = ModelRunEvent::application_interrupted(true);
+
+        assert_eq!(completed.resulting_state(), RunState::Completed);
+        assert_eq!(cancelled.resulting_state(), RunState::Cancelled);
+        assert_eq!(interrupted.resulting_state(), RunState::Failed);
+        assert!(completed.is_terminal());
+        assert!(cancelled.is_terminal());
+        assert!(interrupted.is_terminal());
+        assert!(matches!(
+            interrupted,
+            ModelRunEvent::Failed {
+                error: ProviderError {
+                    provider_code: Some(ref code),
+                    retryable: true,
+                    ..
+                },
+                partial_content_retained: true,
+            } if code == APPLICATION_INTERRUPTED_PROVIDER_CODE
+        ));
     }
 
     #[test]

@@ -19,15 +19,15 @@ src-tauri/src/
 
 ## 当前底座
 
-- SQLite 版本化迁移（当前 schema v3）和本地默认工作区。
+- SQLite 版本化迁移（当前 schema v5）、ModelRun事件与CanvasViewport持久化、本地默认工作区。
 - 会话、完整问答节点、显式语义边与画布位置。
 - 每轮调用前生成并保存冻结的 `ContextSnapshot`。
 - 深入、发散、换角度的确定性上下文继承规则。
-- `ContentBlock`、模型运行请求/事件/错误、导入双轨、证据引用和事件信封 RC1 契约。
+- Frozen V1上下文/模型运行契约，以及RC1导入双轨、证据引用和事件信封。
 - 追加式领域事件账本。
 - 创建会话、加载图、追加/完成问答、读取上下文和保存位置的 Tauri 命令。
 
-跨团队契约说明见 [`docs/contracts/v1-contract-baseline.md`](../docs/contracts/v1-contract-baseline.md)。RC1 尚未冻结，需员工02～05完成消费方评审。
+跨团队契约说明见 [`docs/contracts/v1-contract-baseline.md`](../docs/contracts/v1-contract-baseline.md)。Context/Runtime已冻结；Import/Evidence等待M2专项消费方评审。
 
 桌面端数据库、原始导入内容与迁移备份的物理边界见
 [`docs/desktop-local-data-layout.md`](../docs/desktop-local-data-layout.md)。

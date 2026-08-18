@@ -12,10 +12,11 @@ pub use context::{
     OmittedContextRef, compile_context,
 };
 pub use conversation::{
-    AppendTurnInput, BranchType, CanvasNodePosition, CompleteTurnInput, Conversation,
-    ConversationEdge, ConversationGraph, ConversationNode, ConversationSummary,
+    AppendTurnInput, BranchType, CanvasNodePosition, CanvasViewportState, CompleteTurnInput,
+    Conversation, ConversationEdge, ConversationGraph, ConversationNode, ConversationSummary,
     CreateConversationInput, KernelBootstrap, Message, MessageRole, RunState, SCHEMA_VERSION,
-    UpdateNodePositionInput, Workspace, new_id, now_timestamp,
+    SaveCanvasViewportInput, StartModelRunInput, UpdateNodePositionInput, Workspace, new_id,
+    now_timestamp,
 };
 pub use credentials::{CredentialError, CredentialRef, CredentialResult, SetCredentialInput};
 pub use error::{KernelError, KernelResult};
