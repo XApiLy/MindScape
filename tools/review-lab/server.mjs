@@ -6,6 +6,7 @@ import {
   open,
   readFile,
   readdir,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -15,11 +16,13 @@ import { promisify } from "node:util";
 import {
   createVersionId,
   createAnchorId,
+  isDeletableVersion,
   parseGitReviewSignal,
   publicVersion,
   validateAnchorInput,
   validateReviewInput,
   validateVersionInput,
+  versionTrack,
 } from "./lib.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -303,6 +306,39 @@ async function createQueuedVersion(rawInput, trigger = { type: "api" }) {
   return version;
 }
 
+function quickBuildTitle(now = new Date()) {
+  const stamp = new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(now).replaceAll("/", "-");
+  return `观察分支 · ${stamp}`;
+}
+
+async function createQuickBuild() {
+  return createQueuedVersion({
+    title: quickBuildTitle(),
+    author: "项目负责人",
+    summary: "随时编译当前工作区界面，用于临时观察和对比；可删除，不进入员工确认主线。",
+    focus: "观察当前界面与交互状态，必要时与员工确认版本对比。",
+    buildMode: "preview",
+    track: "branch",
+  }, { type: "founder-quick-build" });
+}
+
+async function deleteObservationVersion(version) {
+  if (versionTrack(version) !== "branch") throw new Error("员工确认主线不可删除");
+  if (!isDeletableVersion(version)) throw new Error("构建中的观察分支不能删除");
+  const versionsRoot = resolve(VERSIONS_ROOT);
+  const versionRoot = resolve(VERSIONS_ROOT, version.id);
+  if (!versionRoot.startsWith(`${versionsRoot}${sep}`)) throw new Error("删除目标超出版本归档目录");
+  await rm(versionRoot, { recursive: true, force: false });
+  broadcast("version", { id: version.id, deleted: true });
+}
+
 async function scanGitReviewSignal({ initialize = false } = {}) {
   const { stdout } = await execFileAsync(
     "git",
@@ -413,6 +449,21 @@ const server = createServer(async (request, response) => {
       const source = request.headers["x-review-lab-client"] === "cli" ? "cli" : "gui";
       const version = await createQueuedVersion(await readJsonBody(request), { type: source });
       sendJson(response, 202, { version: publicVersion(version) });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/quick-build") {
+      const version = await createQuickBuild();
+      sendJson(response, 202, { version: publicVersion(version) });
+      return;
+    }
+
+    const deleteVersionMatch = url.pathname.match(/^\/api\/versions\/([^/]+)$/);
+    if (request.method === "DELETE" && deleteVersionMatch) {
+      const version = await readVersion(decodeURIComponent(deleteVersionMatch[1]));
+      if (!version) return sendError(response, 404, new Error("版本不存在"));
+      await deleteObservationVersion(version);
+      sendJson(response, 200, { deleted: true, id: version.id });
       return;
     }
 

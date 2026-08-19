@@ -29,6 +29,9 @@ const elements = {
   toggleCompare: $("#toggle-compare"),
   launchVersion: $("#launch-version"),
   showLog: $("#show-log"),
+  quickBuild: $("#quick-build"),
+  branchManagement: $("#branch-management"),
+  deleteVersion: $("#delete-version"),
   pointDetail: $("#point-detail"),
   annotationLayer: $("#annotation-layer"),
   anchorList: $("#anchor-list"),
@@ -68,7 +71,17 @@ const triggerLabels = {
   cli: "CMD / PowerShell 确认",
   "git-trailer": "Git 提交标记自动识别",
   api: "HTTP 接口",
+  "founder-quick-build": "负责人随时编译",
 };
+
+const trackLabels = {
+  main: "员工确认主线",
+  branch: "我的观察分支",
+};
+
+function versionTrack(version) {
+  return version?.track === "branch" ? "branch" : "main";
+}
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -192,15 +205,27 @@ function renderVersionList() {
     elements.versionList.innerHTML = `<div class="review-empty">还没有可评审版本</div>`;
     return;
   }
-  elements.versionList.innerHTML = state.versions.map((version) => `
-    <button class="version-item ${version.id === state.selectedId ? "selected" : ""}" data-version-id="${escapeHtml(version.id)}" type="button">
-      <span class="timeline-glyph"><i class="status-dot ${escapeHtml(version.status)}"></i></span>
-      <span class="version-copy">
-        <strong>${escapeHtml(version.title)}</strong>
-        <small><span>${escapeHtml(version.author)}</span><span>${formatTime(version.createdAt)}</span></small>
-      </span>
-    </button>
-  `).join("");
+  const renderItems = (versions, track) => versions.length ? versions.map((version) => `
+      <button class="version-item track-${track} ${version.id === state.selectedId ? "selected" : ""}" data-version-id="${escapeHtml(version.id)}" type="button">
+        <span class="timeline-glyph"><i class="status-dot ${escapeHtml(version.status)}"></i></span>
+        <span class="version-copy">
+          <strong>${escapeHtml(version.title)}</strong>
+          <small><span>${escapeHtml(version.author)}</span><span>${formatTime(version.createdAt)}</span></small>
+        </span>
+      </button>
+    `).join("") : `<div class="track-empty">${track === "branch" ? "点击上方“随时编译”创建" : "还没有员工确认版本"}</div>`;
+  const mainVersions = state.versions.filter((version) => versionTrack(version) === "main");
+  const branchVersions = state.versions.filter((version) => versionTrack(version) === "branch");
+  elements.versionList.innerHTML = `
+    <section class="track-lane main-lane">
+      <header class="track-heading"><span><i></i><strong>员工确认主线</strong><small>永久保留</small></span><b>${mainVersions.length}</b></header>
+      <div class="track-versions">${renderItems(mainVersions, "main")}</div>
+    </section>
+    <section class="track-lane branch-lane">
+      <header class="track-heading"><span><i></i><strong>我的观察分支</strong><small>随时编译 · 可删除</small></span><b>${branchVersions.length}</b></header>
+      <div class="track-versions">${renderItems(branchVersions, "branch")}</div>
+    </section>
+  `;
   elements.versionList.querySelectorAll("[data-version-id]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedId = button.dataset.versionId;
@@ -337,7 +362,7 @@ function renderPreview(version) {
   elements.toggleCompare.textContent = state.comparing ? "关闭对比" : "◫ 对比版本";
 
   elements.compareSelect.innerHTML = otherVersions.map((candidate) => `
-    <option value="${escapeHtml(candidate.id)}" ${candidate.id === state.compareId ? "selected" : ""}>${escapeHtml(candidate.title)} · ${formatTime(candidate.createdAt)}</option>
+    <option value="${escapeHtml(candidate.id)}" ${candidate.id === state.compareId ? "selected" : ""}>[${versionTrack(candidate) === "main" ? "主线" : "分支"}] ${escapeHtml(candidate.title)} · ${formatTime(candidate.createdAt)}</option>
   `).join("");
   if (state.comparing) {
     if (!state.compareId || state.compareId === version.id) state.compareId = chooseDefaultCompareId();
@@ -380,6 +405,10 @@ function renderInspector(version) {
   $("#detail-dirty").textContent = version.git?.dirty ? `包含 ${version.git.dirtyFileCount} 项未提交变更` : "已提交快照";
   $("#detail-focus").textContent = version.focus || "未单独指定；请按本轮推进说明整体评审。";
   elements.launchVersion.hidden = !(version.nativeArtifacts?.length);
+  const isBranch = versionTrack(version) === "branch";
+  elements.branchManagement.hidden = !isBranch;
+  elements.deleteVersion.disabled = !version.deletable;
+  elements.deleteVersion.textContent = version.deletable ? "删除此分支版本" : "构建完成后可删除";
   renderAnchorList(version);
   renderReviews(version);
 }
@@ -390,7 +419,7 @@ function render() {
   renderSystem();
   renderPreview(version);
   renderInspector(version);
-  $("#version-eyebrow").textContent = version ? `${version.author} · ${statusLabels[version.status] || version.status}` : "尚未选择版本";
+  $("#version-eyebrow").textContent = version ? `${trackLabels[versionTrack(version)]} · ${version.author} · ${statusLabels[version.status] || version.status}` : "尚未选择版本";
   $("#version-title").textContent = version?.title || "建立第一个评审版本";
 }
 
@@ -410,6 +439,44 @@ function openCreateDialog() {
   elements.createDialog.showModal();
   setTimeout(() => elements.createForm.elements.title.focus(), 30);
 }
+
+elements.quickBuild.addEventListener("click", async () => {
+  elements.quickBuild.disabled = true;
+  elements.quickBuild.classList.add("is-building");
+  try {
+    const body = await api("/api/quick-build", { method: "POST", body: "{}" });
+    state.selectedId = body.version.id;
+    state.activeAnchorId = null;
+    updateDeepLink(state.selectedId);
+    toast("观察分支已进入构建队列");
+    await refresh();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    elements.quickBuild.disabled = false;
+    elements.quickBuild.classList.remove("is-building");
+  }
+});
+
+elements.deleteVersion.addEventListener("click", async () => {
+  const version = selectedVersion();
+  if (!version?.deletable || versionTrack(version) !== "branch") return;
+  const confirmed = window.confirm(`删除观察分支“${version.title}”？\n\n只会删除该版本的预览归档，不影响源码和员工确认主线。删除后无法从 Review Lab 恢复。`);
+  if (!confirmed) return;
+  elements.deleteVersion.disabled = true;
+  try {
+    await api(`/api/versions/${encodeURIComponent(version.id)}`, { method: "DELETE" });
+    state.selectedId = null;
+    state.activeAnchorId = null;
+    state.comparing = false;
+    updateDeepLink(null);
+    await refresh({ preserveSelection: false });
+    toast("观察分支版本已删除");
+  } catch (error) {
+    toast(error.message);
+    elements.deleteVersion.disabled = false;
+  }
+});
 
 elements.createForm.addEventListener("submit", async (event) => {
   event.preventDefault();

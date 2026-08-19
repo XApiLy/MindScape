@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createVersionId,
   createAnchorId,
+  isDeletableVersion,
   parseGitReviewSignal,
   slugify,
   validateReviewInput,
@@ -23,6 +24,7 @@ test("version input is normalized and defaults to preview", () => {
       summary: "首轮视觉基线",
       focus: "",
       buildMode: "preview",
+      track: "main",
     },
   );
 });
@@ -54,6 +56,7 @@ test("Git trailers form one explicit automated review signal", () => {
         summary: "[review] 完成停止交互",
         focus: "停止中反馈",
         buildMode: "preview",
+        track: "main",
       },
       trigger: { type: "git-trailer", commit: "abc123" },
     },
@@ -92,4 +95,11 @@ test("visual anchor keeps normalized coordinates and safe element context", () =
 
 test("anchor id is short enough to paste into a discussion", () => {
   assert.match(createAnchorId(new Date("2026-08-18T09:45:12.000Z")), /^UI-260818094512-[A-F0-9]{4}$/);
+});
+
+test("only completed observation-branch versions are deletable", () => {
+  assert.equal(isDeletableVersion({ track: "branch", status: "ready" }), true);
+  assert.equal(isDeletableVersion({ track: "branch", status: "building" }), false);
+  assert.equal(isDeletableVersion({ track: "main", status: "ready" }), false);
+  assert.equal(isDeletableVersion({ status: "ready" }), false);
 });

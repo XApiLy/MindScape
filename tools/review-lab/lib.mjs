@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 export const VALID_BUILD_MODES = new Set(["preview", "full"]);
+export const VALID_VERSION_TRACKS = new Set(["main", "branch"]);
 export const VALID_VERDICTS = new Set(["approved", "changes_requested", "rejected", "deferred"]);
 
 export function cleanText(value, maxLength) {
@@ -36,13 +37,23 @@ export function validateVersionInput(input) {
   const summary = cleanText(input?.summary, 1200);
   const focus = cleanText(input?.focus, 600);
   const buildMode = cleanText(input?.buildMode, 20) || "preview";
+  const track = cleanText(input?.track, 20) || "main";
 
   if (!title) throw new Error("请填写版本名称");
   if (!author) throw new Error("请填写提交员工");
   if (!summary) throw new Error("请说明本次推进内容");
   if (!VALID_BUILD_MODES.has(buildMode)) throw new Error("构建类型无效");
+  if (!VALID_VERSION_TRACKS.has(track)) throw new Error("版本轨道无效");
 
-  return { title, author, summary, focus, buildMode };
+  return { title, author, summary, focus, buildMode, track };
+}
+
+export function versionTrack(version) {
+  return VALID_VERSION_TRACKS.has(version?.track) ? version.track : "main";
+}
+
+export function isDeletableVersion(version) {
+  return versionTrack(version) === "branch" && !["queued", "building"].includes(version?.status);
 }
 
 export function validateReviewInput(input) {
@@ -102,6 +113,7 @@ export function parseGitReviewSignal({ commit, gitAuthor, subject, body }) {
       summary: trailerValue(body, "Review-Summary") || subject,
       focus: trailerValue(body, "Review-Focus"),
       buildMode,
+      track: "main",
     },
     trigger: { type: "git-trailer", commit },
   };
@@ -110,6 +122,8 @@ export function parseGitReviewSignal({ commit, gitAuthor, subject, body }) {
 export function publicVersion(version) {
   return {
     ...version,
+    track: versionTrack(version),
+    deletable: isDeletableVersion(version),
     buildLogPath: undefined,
     artifactDirectory: undefined,
   };

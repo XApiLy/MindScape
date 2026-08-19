@@ -19,13 +19,19 @@
           </div>
         </header>
 
-        <button class="primary-action" id="open-create" type="button">
-          <span class="plus">＋</span>
-          添加可讨论版本
-        </button>
+        <div class="version-actions">
+          <button class="primary-action" id="open-create" type="button">
+            <span class="plus">＋</span>
+            添加员工确认版本
+          </button>
+          <button class="quick-build-action" id="quick-build" type="button">
+            <span>↻</span>
+            <span><strong>随时编译当前界面</strong><small>进入可删除的观察分支</small></span>
+          </button>
+        </div>
 
         <div class="section-heading">
-          <span>讨论版本</span>
+          <span>版本轨道</span>
           <span class="count" id="version-count">0</span>
         </div>
         <nav class="version-list" id="version-list" aria-label="版本时间线"></nav>
@@ -115,6 +121,10 @@
               <div><dt>触发方式</dt><dd id="detail-trigger"></dd></div>
               <div><dt>工作区</dt><dd id="detail-dirty"></dd></div>
             </dl>
+            <div class="branch-management" id="branch-management" hidden>
+              <div><strong>我的观察分支</strong><span>可删除，不会影响源码或员工确认主线。</span></div>
+              <button type="button" id="delete-version">删除此分支版本</button>
+            </div>
           </section>
 
           <section class="inspector-section focus-section" id="focus-section">
@@ -157,6 +167,7 @@
 
     <dialog id="create-dialog" class="modal">
       <form method="dialog" class="modal-card" id="create-form">
+        <input type="hidden" name="track" value="main" />
         <header>
           <div>
             <div class="eyebrow">CREATE REVIEW VERSION</div>
