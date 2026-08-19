@@ -19,6 +19,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 1180px; min-height: 100vh; overflow: hidden; }
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }

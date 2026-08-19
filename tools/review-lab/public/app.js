@@ -228,7 +228,10 @@ function buildStateMarkup(version) {
 }
 
 function setPreview(iframe, overlay, version) {
-  const canPreview = version?.previewUrl && ["ready", "warning"].includes(version.status);
+  // A native build may fail after its frontend preview has already been
+  // archived. Keep that visual evidence visible; the inspector still reports
+  // the native-build result independently.
+  const canPreview = Boolean(version?.previewUrl);
   iframe.hidden = !canPreview;
   overlay.hidden = Boolean(canPreview);
   if (canPreview) {
@@ -319,7 +322,7 @@ function renderPreview(version) {
 
   elements.primaryLabel.textContent = version.title;
   setPreview(elements.primaryPreview, elements.primaryBuildState, version);
-  const canPoint = Boolean(version.previewUrl && ["ready", "warning"].includes(version.status));
+  const canPoint = Boolean(version.previewUrl);
   elements.pointDetail.disabled = !canPoint;
   if (!canPoint) state.pointing = false;
   elements.pointDetail.classList.toggle("active", state.pointing);
