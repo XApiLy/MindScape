@@ -24,7 +24,7 @@
 | 5 | 流式期间强制关闭，重启后无永久 pending 且历史完整 | 通过（运行与数据） | Windows 结束任务后重启，运行确定性恢复为 `failed + application_interrupted`，序列 775、部分正文 1392 字符保留、无永久 pending、SQLite 完整。证据：`evidence/employee02/m1-recovery-20260820/README.md`。画布联合恢复归入脚本 8。 | **失败即 No-Go** |
 | 6 | 使用无效 Key，得到可修复认证错误且不无限重试 | 通过 | 错误 Key 显示安全鉴权提示，不回显凭据、不回退 Mock、不创建 ModelRun。证据：`evidence/employee02/prov-014-long-output-auth-20260820/README.md`。 | **失败即 No-Go** |
 | 7 | 断网/超时，进入正确错误态且不生成伪助手消息 | 通过 | 已有正文后持续断网进入 `failed/stream_idle_timeout`，部分正文保留、唯一终态、无永久 pending、无自动计费重试。证据见员工05当前 PEC。 | 普通 |
-| 8 | 重启恢复会话、节点、边、模型、位置和 viewport | 部分通过 | 重启后真实库仍完整：取消 7、失败 3，27/27 Node 有 provider/model，`integrity_check=ok`，pending/streaming=0，最新强退会话保留 viewport；但取消节点位置落库 0 个，`application_interrupted` 节点位置落库 0 个，仍缺位置持久化的联合证据。 | **失败即 No-Go** |
+| 8 | 重启恢复会话、节点、边、模型、位置和 viewport | 通过 | 同一 clean Build 中拖动取消节点后正常关闭并重新打开；只读核对对应会话 5 个 Node、3 条 Edge、3 个位置、1 个 viewport，重复 Edge 0，所有 Node 均有 provider/model，`integrity_check=ok`，pending/streaming=0。证据：`evidence/employee01/m1-restart-canvas-20260820/README.md`。 | **失败即 No-Go** |
 | 9 | 数据库、日志、崩溃材料均不含完整 API Key | 技术通过（待 clean Build 复签） | 仓库秘密扫描通过；Roaming 数据库/备份与 Local 日志/Crashpad 共 59/59 文件可读扫描，未发现常见 API Key、Token 或私钥模式。最终 clean Build 仍须按同一范围复跑并保存脱敏结果。 | **失败即 No-Go** |
 | 10 | 前端、Rust、PEC、仓库治理全部通过 | clean 基线通过 | 提交 `98e1270` 已推送 PR 分支；同一 clean 源码上 Chat 18/18、Canvas 13/13、性能 1/1、Rust 49/49、Review Lab 9/9、前端/Tauri release、Rust fmt/clippy、PEC 与秘密扫描均通过。 | 普通 |
 
