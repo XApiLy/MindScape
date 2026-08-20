@@ -19,12 +19,12 @@
 |---|---|---|---|---|
 | 1 | 新用户创建本地对话并配置 DeepSeek 凭据 | 部分通过 | 已有真实 `GET /models` 成功证据；仍需从空状态完整演示首次配置与创建对话。 | 普通 |
 | 2 | 根节点真实流式回答，显示真实 provider/model | 通过（待 clean 基线复演） | 真实 DeepSeek 根节点、长文正文、provider/model 与 Usage 已通过；最终 clean Build 须回放一次。证据：`evidence/employee02/prov-014-long-output-auth-20260820/README.md`。 | **失败即 No-Go** |
-| 3 | 建立至少两类分支并核对实际 ContextSnapshot | 未通过 | 2026-08-20 只读核对真实库：21 个 Node 与 21 个 ContextSnapshot 的分支类型均为 `continues`，尚无第二种真实分支类型及冻结上下文证据。 | 普通 |
+| 3 | 建立至少两类分支并核对实际 ContextSnapshot | 通过 | 创始人在统一 clean Build 中真实执行“深入”和“发散”；Node、Edge、ContextSnapshot 分支类型分别一致，真实库聚合为 `continues=23`、`deepens=1`、`diverges=1`。证据：`evidence/employee01/m1-real-branches-20260820/README.md`。 | 普通 |
 | 4 | 第二次回答中途停止，保留部分文本且不得为 completed | 通过 | 真实 DeepSeek 已进入唯一 `cancelled` 终态，部分文本保留，终态后 delta 为 0，数据完整性通过；重复投影修复已通过自动测试。创始人在统一 Tauri release Build ID `20260819-144548-chat-012-single-card-recheck-0cb1c0053b5a-dirty` 中确认阅读视图仅一张已停止卡片，部分内容与重试入口保留；进程路径与发布目录一致。证据：`evidence/employee04/prov-013-real-cancel-20260819/README.md`。 | **失败即 No-Go** |
 | 5 | 流式期间强制关闭，重启后无永久 pending 且历史完整 | 通过（运行与数据） | Windows 结束任务后重启，运行确定性恢复为 `failed + application_interrupted`，序列 775、部分正文 1392 字符保留、无永久 pending、SQLite 完整。证据：`evidence/employee02/m1-recovery-20260820/README.md`。画布联合恢复归入脚本 8。 | **失败即 No-Go** |
 | 6 | 使用无效 Key，得到可修复认证错误且不无限重试 | 通过 | 错误 Key 显示安全鉴权提示，不回显凭据、不回退 Mock、不创建 ModelRun。证据：`evidence/employee02/prov-014-long-output-auth-20260820/README.md`。 | **失败即 No-Go** |
 | 7 | 断网/超时，进入正确错误态且不生成伪助手消息 | 通过 | 已有正文后持续断网进入 `failed/stream_idle_timeout`，部分正文保留、唯一终态、无永久 pending、无自动计费重试。证据见员工05当前 PEC。 | 普通 |
-| 8 | 重启恢复会话、节点、边、模型、位置和 viewport | 部分通过 | 正常重启已证明 A/B 会话、节点、边、位置、viewport；强退已证明运行终态与部分正文。仍缺取消、失败、强退后的唯一节点、边、位置、viewport 在同一 Build 的联合窗口证据。 | **失败即 No-Go** |
+| 8 | 重启恢复会话、节点、边、模型、位置和 viewport | 部分通过 | 正常重启已证明 A/B 会话、节点、边、位置、viewport；强退已证明运行终态与部分正文。当前真实库中取消节点位置落库 0 个，`application_interrupted` 失败节点位置落库 0 个，仅有 viewport；仍缺同一 Build 的联合窗口证据。 | **失败即 No-Go** |
 | 9 | 数据库、日志、崩溃材料均不含完整 API Key | 技术通过（待 clean Build 复签） | 仓库秘密扫描通过；Roaming 数据库/备份与 Local 日志/Crashpad 共 59/59 文件可读扫描，未发现常见 API Key、Token 或私钥模式。最终 clean Build 仍须按同一范围复跑并保存脱敏结果。 | **失败即 No-Go** |
 | 10 | 前端、Rust、PEC、仓库治理全部通过 | clean 基线通过 | 提交 `98e1270` 已推送 PR 分支；同一 clean 源码上 Chat 18/18、Canvas 13/13、性能 1/1、Rust 49/49、Review Lab 9/9、前端/Tauri release、Rust fmt/clippy、PEC 与秘密扫描均通过。 | 普通 |
 
