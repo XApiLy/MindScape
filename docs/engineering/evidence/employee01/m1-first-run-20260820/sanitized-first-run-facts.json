@@ -1,0 +1,55 @@
+{
+  "capturedAt": "2026-08-20T16:57:00+08:00",
+  "build": {
+    "buildId": "20260820-155308-m1-clean-gate-98e12706c2f4",
+    "sourceCommit": "98e12706c2f4",
+    "sourceTreeDirty": false,
+    "executableSha256": "6FE02B0BD551288805B8034AE39DB19528815F901F24D1C69471865985ABA59A"
+  },
+  "emptyState": {
+    "conversations": 0,
+    "conversationNodes": 0,
+    "modelRuns": 0
+  },
+  "afterFirstAnswer": {
+    "conversations": 1,
+    "conversationNodes": 1,
+    "conversationEdges": 0,
+    "contextSnapshots": 1,
+    "modelRuns": 1,
+    "latestRun": {
+      "state": "completed",
+      "lastSequence": 4,
+      "partialContentLength": 1,
+      "providerId": "deepseek",
+      "modelId": "deepseek-v4-flash"
+    },
+    "pendingOrStreaming": 0,
+    "integrityCheck": "ok",
+    "foreignKeyViolations": 0
+  },
+  "restoredOriginalData": {
+    "conversations": 14,
+    "conversationNodes": 27,
+    "integrityCheck": "ok",
+    "foreignKeyViolations": 0,
+    "applicationRelaunched": true
+  },
+  "credentialBoundary": {
+    "storage": "operating-system secure credential store",
+    "fullCredentialRead": false,
+    "fullCredentialExported": false,
+    "fullCredentialDeleted": false
+  },
+  "localSecretPatternScan": {
+    "filesSeen": 341,
+    "filesReadable": 307,
+    "matchedFiles": 0
+  },
+  "contentExcluded": [
+    "request text",
+    "response text",
+    "complete credentials",
+    "raw logs"
+  ]
+}
