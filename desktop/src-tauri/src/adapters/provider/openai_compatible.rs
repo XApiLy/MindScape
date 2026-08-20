@@ -32,6 +32,7 @@ pub struct OpenAiCompatibleConfig {
     pub credential_account_id: String,
     pub models: Vec<String>,
     pub custom_base_url_allowed: bool,
+    pub disable_thinking: bool,
 }
 
 impl OpenAiCompatibleConfig {
@@ -44,6 +45,10 @@ impl OpenAiCompatibleConfig {
             credential_account_id: "default".into(),
             models: vec!["deepseek-v4-flash".into()],
             custom_base_url_allowed: false,
+            // DeepSeek V4 enables thinking by default. MindScape V1 only persists the
+            // visible answer, so spending the entire output budget on reasoning would
+            // otherwise produce a successful run with no displayable content.
+            disable_thinking: true,
         }
     }
 }
@@ -199,7 +204,7 @@ impl OpenAiCompatibleProvider {
         }
 
         let credential = self.credential()?;
-        let body = request_body(request);
+        let body = request_body(request, &self.config);
         let total_timeout = Duration::from_millis(request.budget.timeout_ms.max(1));
         let send = self
             .client
@@ -228,6 +233,7 @@ impl OpenAiCompatibleProvider {
 
         let mut sequence = 1;
         let mut retained_content = false;
+        let mut received_reasoning_content = false;
         let mut decoder = SseDecoder::default();
         let mut final_reason = FinishReason::Unknown;
         let mut terminal_error = None;
@@ -274,15 +280,12 @@ impl OpenAiCompatibleProvider {
             }
             for frame in frames {
                 if frame.data == "[DONE]" {
-                    let event = terminal_error.map_or_else(
-                        || ModelRunEvent::Completed {
-                            finish_reason: final_reason,
-                            usage: latest_usage,
-                        },
-                        |error| ModelRunEvent::Failed {
-                            error,
-                            partial_content_retained: retained_content,
-                        },
+                    let event = terminal_event(
+                        terminal_error,
+                        final_reason,
+                        latest_usage,
+                        retained_content,
+                        received_reasoning_content,
                     );
                     emit_event(request, next_sequence(&mut sequence), event, emit);
                     return Ok(());
@@ -290,6 +293,11 @@ impl OpenAiCompatibleProvider {
                 let chunk: ChatCompletionChunk = serde_json::from_str(&frame.data)
                     .map_err(|_| network_error("invalid_stream_event", retained_content))?;
                 for choice in chunk.choices {
+                    received_reasoning_content |= choice
+                        .delta
+                        .reasoning_content
+                        .as_deref()
+                        .is_some_and(|content| !content.is_empty());
                     if let Some(delta) = choice.delta.content
                         && !delta.is_empty()
                     {
@@ -378,6 +386,8 @@ struct ChatCompletionRequest {
     stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -391,7 +401,16 @@ struct StreamOptions {
     include_usage: bool,
 }
 
-fn request_body(request: &ModelRunRequest) -> ChatCompletionRequest {
+#[derive(Debug, Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    mode: &'static str,
+}
+
+fn request_body(
+    request: &ModelRunRequest,
+    config: &OpenAiCompatibleConfig,
+) -> ChatCompletionRequest {
     let mut messages = request
         .context_snapshot
         .selected_messages
@@ -418,6 +437,9 @@ fn request_body(request: &ModelRunRequest) -> ChatCompletionRequest {
             include_usage: true,
         },
         max_tokens: request.budget.max_output_tokens,
+        thinking: config
+            .disable_thinking
+            .then_some(ThinkingConfig { mode: "disabled" }),
     }
 }
 
@@ -438,6 +460,7 @@ struct ChatChoice {
 #[derive(Debug, Default, Deserialize)]
 struct ChatDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -461,6 +484,50 @@ impl From<OpenAiUsage> for ModelUsage {
 fn next_sequence(sequence: &mut u64) -> u64 {
     *sequence += 1;
     *sequence
+}
+
+fn terminal_event(
+    terminal_error: Option<ProviderError>,
+    finish_reason: FinishReason,
+    usage: ModelUsage,
+    retained_content: bool,
+    received_reasoning_content: bool,
+) -> ModelRunEvent {
+    if let Some(error) = terminal_error {
+        return ModelRunEvent::Failed {
+            error,
+            partial_content_retained: retained_content,
+        };
+    }
+    if retained_content {
+        return ModelRunEvent::Completed {
+            finish_reason,
+            usage,
+        };
+    }
+
+    let (code, safe_message) =
+        if received_reasoning_content && finish_reason == FinishReason::Length {
+            (
+                "visible_response_exhausted",
+                "The model reached the output limit before returning a visible answer.",
+            )
+        } else {
+            (
+                "empty_visible_response",
+                "The provider completed without returning a visible answer.",
+            )
+        };
+    ModelRunEvent::Failed {
+        error: provider_error(
+            ProviderErrorCategory::Unknown,
+            code,
+            safe_message,
+            true,
+            None,
+        ),
+        partial_content_retained: false,
+    }
 }
 
 fn emit_event(
@@ -659,11 +726,58 @@ mod tests {
 
     #[test]
     fn builds_only_frozen_context_and_current_input() {
-        let body = request_body(&request());
+        let body = request_body(&request(), &OpenAiCompatibleConfig::deepseek());
         assert_eq!(body.messages.len(), 1);
         assert_eq!(body.messages[0].content, "当前问题");
         assert_eq!(body.model, "deepseek-v4-flash");
         assert!(body.stream);
+    }
+
+    #[test]
+    fn deepseek_requests_visible_answer_mode() {
+        let body = request_body(&request(), &OpenAiCompatibleConfig::deepseek());
+        let value = serde_json::to_value(body).expect("serialize request body");
+        assert_eq!(value["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn reasoning_only_output_limit_is_a_failed_run() {
+        let event = terminal_event(
+            None,
+            FinishReason::Length,
+            ModelUsage {
+                output_tokens: Some(256),
+                ..ModelUsage::default()
+            },
+            false,
+            true,
+        );
+        let ModelRunEvent::Failed { error, .. } = event else {
+            panic!("reasoning-only response must not complete successfully");
+        };
+        assert_eq!(
+            error.provider_code.as_deref(),
+            Some("visible_response_exhausted")
+        );
+        assert!(error.retryable);
+    }
+
+    #[test]
+    fn visible_partial_output_can_complete_at_output_limit() {
+        let event = terminal_event(
+            None,
+            FinishReason::Length,
+            ModelUsage::default(),
+            true,
+            false,
+        );
+        assert!(matches!(
+            event,
+            ModelRunEvent::Completed {
+                finish_reason: FinishReason::Length,
+                ..
+            }
+        ));
     }
 
     #[test]

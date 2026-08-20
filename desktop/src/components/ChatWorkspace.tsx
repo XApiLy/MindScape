@@ -18,6 +18,8 @@ import {
   X,
 } from "lucide-react";
 import { presentProviderError, type ChatRunState } from "../app/chatRunState";
+import { projectChatTimeline } from "../app/chatTimeline";
+import { presentMissingNodeAnswer } from "../app/nodeAnswerPresentation";
 import type { ChatModelOption } from "../app/providerCatalog";
 import type {
   BranchType,
@@ -86,6 +88,7 @@ function NodeCard({
   onInspectContext: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const missingAnswer = presentMissingNodeAnswer(node.runState);
 
   const copyAnswer = async () => {
     if (!node.assistantMessage) return;
@@ -114,7 +117,10 @@ function NodeCard({
           {node.assistantMessage ? (
             <p className="answer-text">{blocksToPlainText(node.assistantMessage.contentBlocks)}</p>
           ) : (
-            <p className="pending-answer"><LoaderCircle aria-hidden="true" />等待运行恢复</p>
+            <p className="pending-answer">
+              {missingAnswer.showSpinner ? <LoaderCircle aria-hidden="true" /> : null}
+              {missingAnswer.message}
+            </p>
           )}
           <div className="turn-actions">
             <button type="button" onClick={onContinue}>
@@ -404,6 +410,7 @@ export function ChatWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasViewportsRef = useRef(new Map<string, CanvasViewport>());
   const parent = graph?.nodes.find((node) => node.id === selectedParentId) ?? null;
+  const timeline = projectChatTimeline(graph?.nodes ?? [], run);
   const running = run
     ? run.status === "starting" || run.status === "streaming"
     : runSubmitting;
@@ -471,23 +478,23 @@ export function ChatWorkspace({
               <p>回答会成为会话图中的根节点，之后可以从任意节点继续。</p>
             </div>
           ) : null}
-          {graph?.nodes.map((node) => (
-            <NodeCard
-              key={node.id}
-              node={node}
-              selected={node.id === selectedParentId}
-              onContinue={() => onSelectParent(node.id)}
-              onInspectContext={() => onInspectContext(node)}
-            />
-          ))}
-          {run ? (
+          {timeline.map((entry) => entry.kind === "run" ? (
             <ActiveRunCard
-              run={run}
+              key={`run-${entry.run.nodeId}`}
+              run={entry.run}
               onCancel={onCancel}
               onRetry={onRetry}
               onOpenSettings={onOpenSettings}
             />
-          ) : null}
+          ) : (
+            <NodeCard
+              key={entry.node.id}
+              node={entry.node}
+              selected={entry.node.id === selectedParentId}
+              onContinue={() => onSelectParent(entry.node.id)}
+              onInspectContext={() => onInspectContext(entry.node)}
+            />
+          ))}
         </div> : null}
         {viewMode === "canvas" && !loading && graph ? (
           <ConversationCanvas

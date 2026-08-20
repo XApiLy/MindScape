@@ -67,6 +67,7 @@ const previewProvider: ProviderDescriptor = {
 };
 
 const DEFAULT_PROVIDER_ACCOUNT = "default";
+const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 
 function messageToPrompt(message: Message) {
   return message.contentBlocks
@@ -176,10 +177,10 @@ export function App() {
   const [providerCredentials, setProviderCredentials] = useState<Record<string, boolean>>({ mock: true });
   const [providersLoading, setProvidersLoading] = useState(false);
   const [providersError, setProvidersError] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<ModelSelection | null>({
-    providerId: "mock",
-    modelId: "mock-stream-v1",
-  });
+  // Resolve the initial selection after Tauri reports provider credentials. A
+  // hard-coded Mock selection would be treated as an explicit user choice and
+  // prevent an available real Provider from becoming the default.
+  const [selectedModel, setSelectedModel] = useState<ModelSelection | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const runInFlightRef = useRef(false);
@@ -491,7 +492,7 @@ export function App() {
             ? ["textInput", "usageReporting"]
             : ["textInput"],
           budget: {
-            maxOutputTokens: 1024,
+            maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
             maxCostMicrounits: selectedOption.isMock ? 0 : null,
             timeoutMs: 120_000,
           },

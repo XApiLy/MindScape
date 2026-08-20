@@ -6,11 +6,21 @@
 
 ## 当前工程派单：真实 Chat Alpha
 
-全员先阅读 [V1 总开发路线与责任归属](../docs/engineering/v1-master-roadmap-and-ownership.md)，理解 M0～M5 的先后关系和自己贯穿 V1 的固定责任。员工01～05自 2026-08-18 起只执行其中的 [M1：真实 Chat Alpha 派单](../docs/engineering/v1-execution-dispatch-20260817.md)；员工06并行负责视觉、特效、交互原型和真实应用视觉验收。本轮只交付一个真实 Provider 的可运行、可停止、可恢复 Chat 纵向闭环；DeepSeek Harness、导入器、多厂商并行、Skill / MCP、整体视觉重构和 P1 功能不得占用当前 WIP。
+全员先阅读 [V1 总开发路线与责任归属](../docs/engineering/v1-master-roadmap-and-ownership.md)，理解 M0～M5 的先后关系和自己贯穿 V1 的固定责任。员工01～05自 2026-08-18 起只执行其中的 [M1：真实 Chat Alpha 派单](../docs/engineering/v1-execution-dispatch-20260817.md)。员工06是创始人直管的视觉协作席位，不进入统一工程派单，由创始人直接告诉其当前需要讨论、设计或验收的内容。本轮工程主线只交付一个真实 Provider 的可运行、可停止、可恢复 Chat 纵向闭环；DeepSeek Harness、导入器、多厂商并行、Skill / MCP、整体视觉重构和 P1 功能不得占用当前 WIP。
 
 关键时间：2026-08-18 提交阅读回执与开工 PEC，2026-08-20 建立 Draft PR，2026-08-22 首次真实 DeepSeek 联调，2026-08-24 统一 Alpha 验收。具体责任、分支建议、评审人和 No-Go 条件以派单正文为准。
 
-员工06固定承担 [视觉与交互设计工程师](../docs/design/visual-interaction-design-engineer.md) 席位，直接与创始人实时确认视觉、特效和交互，再与员工03、04共同落地。员工03、04继续负责各自工程正确性与性能，不自行建立另一套设计语言。员工06与其他员工一样维护唯一最新 PEC，因此当前窗口调整为七文件。
+员工06固定承担 [视觉与交互设计工程师](../docs/design/visual-interaction-design-engineer.md) 席位，由创始人直接沟通和安排，不需要产品负责人或工程派单文件再次分配具体任务。员工06在收到创始人指令后与员工03、04共同落地；员工03、04继续负责各自工程正确性与性能，不自行建立另一套设计语言。员工06仍维护唯一最新PEC，用于记录已经收到的创始人指令、确认结果、工程交接和风险，因此七文件窗口不变。
+
+## 验收程序统一交付规则
+
+所有人员立即执行 [验收程序构建与交付规则](../docs/engineering/acceptance-build-policy.md)。交给创始人的Windows程序只能由`scripts/publish-acceptance.ps1`发布到`artifacts/acceptance/versions/<build-id>/`；不得从`target/`直接交付，不得在`desktop/`根目录散放EXE，不得再创建`target-fixed`、`target-new`或同类替代编译目录。
+
+验收脚本必须执行Tauri CLI release构建并内嵌前端。`cargo build`、`cargo test`或其他Rust命令产出的调试EXE即使能打开窗口，也不是有效验收程序；打开后访问`localhost`或要求另开前端服务的版本直接判定无效。
+
+2026-08-19纠正：员工04当前PEC引用的SHA-256 `1ACC36F5CDC09C37AE9CECBEBE96B7FC02555DAD348677382F6B15D3B5EBCAFB`实测打开后访问`localhost:1420`，该EXE及其派生Build ID全部作废，不得用于CHAT-012/PROV-013复验。替代版本必须由Tauri release流程重新发布，并在无开发服务器时实际显示MindScape工作区；员工04下一份PEC必须明确纠正旧结论。
+
+每次通知必须写明Build ID、完整程序路径、SHA-256、来源提交、本次验收范围和已知未通过项。只写“新验收程序：mindscape-desktop.exe”视为无效交付，创始人无需验收。同一轮跨员工验收必须使用同一个Build ID。
 
 ## 全员通知：下一次推进前必须完成阅读
 
@@ -37,7 +47,7 @@
 - **员工03｜无限画布**：重点阅读内核总览中的会话图、语义边和 UI 非真相原则，以及员工01、员工02、员工04当前 PEC。
 - **员工04｜Chat 与工作区**：重点阅读运行事件、ContextSnapshot 和错误契约，以及员工01、员工03、员工05当前 PEC。
 - **员工05｜Provider 运行时**：重点阅读运行请求/事件、取消、错误、安全凭据和脱敏要求，以及员工01、员工02、员工04当前 PEC。
-- **员工06｜视觉与交互设计**：重点阅读 [视觉与交互设计工程师职责](../docs/design/visual-interaction-design-engineer.md)、产品范围、当前 M1 派单，以及员工03、员工04当前 PEC；直接与创始人确认体验方向并记录确认、否决和待验证内容。
+- **员工06｜视觉与交互设计**：重点阅读 [视觉与交互设计工程师职责](../docs/design/visual-interaction-design-engineer.md)、产品范围，以及员工03、员工04当前PEC；具体工作只以创始人直接指令为准，不从统一派单自行领取任务，并记录确认、否决、待验证内容和工程交接。
 
 ### 下一份 PEC 的阅读回执
 
