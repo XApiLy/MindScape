@@ -1,9 +1,17 @@
 # MindScape M1 真实 Chat Alpha 统一验收表
 
 - Owner：员工01（技术负责人）
-- 初始日期：2026-08-18；最近复核：2026-08-20 15:22（UTC+8）
+- 初始日期：2026-08-18；最近复核：2026-08-20 16:03（UTC+8）
 - 当前结论：**No-Go**。在本表的真实运行证据全部闭环前，不进入 M2。
 - 验收口径：[v1-execution-dispatch-20260817.md](./v1-execution-dispatch-20260817.md#11-m1-真实-chat-alpha-统一验收脚本) 与 [m1-pec-review-and-closeout-20260818.md](./m1-pec-review-and-closeout-20260818.md)
+
+## 当前 clean 验收基线
+
+- Build ID：`20260820-155308-m1-clean-gate-98e12706c2f4`
+- 来源提交：`98e12706c2f4`；`sourceTreeDirty=false`
+- 程序：`D:\Project\MindScape\artifacts\acceptance\versions\20260820-155308-m1-clean-gate-98e12706c2f4\mindscape-desktop.exe`
+- SHA-256：`6FE02B0BD551288805B8034AE39DB19528815F901F24D1C69471865985ABA59A`
+- Tauri release 构建与无 `localhost:1420` 独立启动通过，实际显示 MindScape 工作区。
 
 ## 脚本 1—10
 
@@ -18,7 +26,7 @@
 | 7 | 断网/超时，进入正确错误态且不生成伪助手消息 | 通过 | 已有正文后持续断网进入 `failed/stream_idle_timeout`，部分正文保留、唯一终态、无永久 pending、无自动计费重试。证据见员工05当前 PEC。 | 普通 |
 | 8 | 重启恢复会话、节点、边、模型、位置和 viewport | 部分通过 | 正常重启已证明 A/B 会话、节点、边、位置、viewport；强退已证明运行终态与部分正文。仍缺取消、失败、强退后的唯一节点、边、位置、viewport 在同一 Build 的联合窗口证据。 | **失败即 No-Go** |
 | 9 | 数据库、日志、崩溃材料均不含完整 API Key | 技术通过（待 clean Build 复签） | 仓库秘密扫描通过；Roaming 数据库/备份与 Local 日志/Crashpad 共 59/59 文件可读扫描，未发现常见 API Key、Token 或私钥模式。最终 clean Build 仍须按同一范围复跑并保存脱敏结果。 | **失败即 No-Go** |
-| 10 | 前端、Rust、PEC、仓库治理全部通过 | 本地通过，提交链未闭合 | Chat 18/18、Canvas 13/13、性能 1/1、Rust 49/49、Review Lab 9/9、前端构建、Rust fmt/clippy、PEC、秘密扫描和仓库卫生均通过；关键修复与证据仍需进入远端 PR，并从 clean commit 发布最终 release。 | 普通 |
+| 10 | 前端、Rust、PEC、仓库治理全部通过 | clean 基线通过 | 提交 `98e1270` 已推送 PR 分支；同一 clean 源码上 Chat 18/18、Canvas 13/13、性能 1/1、Rust 49/49、Review Lab 9/9、前端/Tauri release、Rust fmt/clippy、PEC 与秘密扫描均通过。 | 普通 |
 
 ## 员工01底层不变量复核
 
@@ -38,7 +46,8 @@
 - [x] 对工作树执行密钥扫描和禁止文件检查；暂存区扫描在提交前执行。
 - [x] 在同一集成树复跑前端、Rust、Review Lab、Tauri 门禁。
 - [x] 形成可回滚、披露员工01—06共同贡献的集成提交并推送恢复分支。
-- [x] 已创建 PR #1，并在真实验收未闭环时保持 No-Go；最新修复提交与 PR 描述仍待更新。
+- [x] 已创建 PR #1，最新 M1 修复与证据已推送；真实验收未闭环时保持 No-Go。
+- [x] 从 clean commit 发布统一 Tauri release，并核对 manifest、SHA-256 与独立启动。
 
 ## 证据规则
 
