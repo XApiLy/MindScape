@@ -44,7 +44,10 @@ $commit = (& git -C $repoRoot rev-parse --short=12 HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "Unable to determine the Git commit."
 }
-$branch = (& git -C $repoRoot branch --show-current).Trim()
+$branch = ((& git -C $repoRoot branch --show-current) | Out-String).Trim()
+if ([string]::IsNullOrWhiteSpace($branch)) {
+    $branch = ((& git -C $repoRoot rev-parse --abbrev-ref HEAD) | Out-String).Trim()
+}
 $workingTreeStatus = (& git -C $repoRoot status --porcelain=v1 --untracked-files=all) -join "`n"
 $isDirty = -not [string]::IsNullOrWhiteSpace($workingTreeStatus)
 $dirtySuffix = if ($isDirty) { "-dirty" } else { "" }
