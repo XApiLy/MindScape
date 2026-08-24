@@ -62,8 +62,20 @@
 - 员工04：只通过命令/查询消费导入预览、运行档案和上下文账单；不得直接解析 SQLite/Vault。
 - 员工05：将能力目录映射为 EffectiveRunProfile；不支持的参数必须在创建 Node/Run 前失败，不得静默删除。
 
-## 7. 本切片验证与未完成项
+## 7. CORE-M2-003：知识状态与分支检索规则
+
+- `candidate`/`inferred` 只能确认或否决；`confirmed` 只能被取代或标记过期，不能直接否决后覆盖旧事实。
+- `rejected`、`superseded`、`stale` 是检索排除态；重新提出相反事实必须使用新的稳定实体 ID。
+- 每次状态变更递增 revision、更新时间并记录新的 generator；旧版本仍由持久化层保留。
+- 主线可按匹配作用域读取已确认事实；任务/探索/复盘分支必须显式 `inherit`/`include` 才能读取项目事实。
+- 候选或推断即使被显式选入，也只能以 `CandidateOnly` 返回，不能作为已确认事实注入 Context Compiler。
+- `exclude` 优先于 `include`/`inherit`；拒绝、取代、过期状态优先于任何 FocusFrame 选择。
+
+纯领域入口为 `transition_entity` 与 `retrieval_decision`，不读写 SQLite，不改变画布或 Markdown 文件。
+
+## 8. 本切片验证与未完成项
 
 - Rust 契约序列化覆盖运行档案、知识作用域/状态/证据和禁生成式原样导入。
 - FocusFrame 覆盖同父节点不同焦点、排除单条消息时整轮隔离、集合冲突拒绝。
-- 尚未完成：生命周期命令、SQLite 持久化、知识状态转换、Markdown 修订、实际导入解析、检索编译和 Provider 映射。这些不得从本 Draft 推断为已交付。
+- 知识状态机覆盖确认、否决、取代、过期、revision 递增和禁止复活；分支规则覆盖任务分支污染阻断、显式继承和候选不冒充事实。
+- 尚未完成：生命周期命令、SQLite 持久化、Markdown 修订、实际导入解析、全文/向量检索编译和 Provider 映射。这些不得从本 Draft 推断为已交付。

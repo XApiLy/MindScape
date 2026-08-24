@@ -4,6 +4,7 @@ mod conversation;
 mod credentials;
 mod error;
 mod focused_context;
+mod knowledge;
 
 pub mod contracts;
 
@@ -24,4 +25,8 @@ pub use error::{KernelError, KernelResult};
 pub use focused_context::{
     FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,
     compile_focused_context,
+};
+pub use knowledge::{
+    KnowledgeAction, KnowledgeRetrievalContext, KnowledgeRetrievalDecision, KnowledgeTransition,
+    KnowledgeTransitionError, retrieval_decision, transition_entity,
 };
