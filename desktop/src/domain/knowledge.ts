@@ -58,6 +58,43 @@ export type KnowledgeEntity = {
   updatedAt: string;
 };
 
+export type KnowledgeRetrievalContext = {
+  workspaceId: string;
+  projectId: string | null;
+  conversationId: string;
+  focusFrameId: string;
+};
+
+export type KnowledgeRetrievalCandidate = {
+  entity: KnowledgeEntity;
+  evidence: EvidenceRef[];
+  retrievalScore: number;
+  estimatedTokens: number;
+};
+
+export type KnowledgeContextReference = {
+  entityId: string;
+  status: KnowledgeStatus;
+  scope: KnowledgeScope;
+  revision: number;
+  evidence: EvidenceRef[];
+  retrievalScore: number;
+  estimatedTokens: number;
+};
+
+export type OmittedKnowledgeRef = {
+  referenceId: string;
+  reason: string;
+};
+
+export type KnowledgeContextSelection = {
+  contractVersion: "mindscape.knowledge-context.v1";
+  retrievalVersion: string;
+  selected: KnowledgeContextReference[];
+  omitted: OmittedKnowledgeRef[];
+  estimatedTokens: number;
+};
+
 export type KnowledgeRelationKind =
   | "mentions"
   | "belongsTo"

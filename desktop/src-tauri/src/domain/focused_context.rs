@@ -6,6 +6,9 @@ use super::{
     ContextCompileInput, ContextSnapshot, ContextTurn, KernelError, KernelResult,
     OmittedContextRef, compile_context,
     contracts::{FOCUS_CONTRACT_VERSION, FocusContextPolicy, FocusFrame, OmittedFocusRef},
+    knowledge::{
+        KnowledgeContextCompileInput, KnowledgeContextSelection, compile_knowledge_context,
+    },
 };
 
 pub const FOCUSED_CONTEXT_CONTRACT_VERSION: &str = "mindscape.focused-context.v1";
@@ -14,6 +17,7 @@ pub const FOCUSED_CONTEXT_CONTRACT_VERSION: &str = "mindscape.focused-context.v1
 pub struct FocusedContextCompileInput {
     pub context: ContextCompileInput,
     pub focus_frame: FocusFrame,
+    pub knowledge: Option<KnowledgeContextCompileInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,12 +28,18 @@ pub struct FocusedContextSnapshot {
     pub context_snapshot: ContextSnapshot,
     pub selected_memory_refs: Vec<String>,
     pub omitted_memory_refs: Vec<OmittedFocusRef>,
+    pub knowledge_context: Option<KnowledgeContextSelection>,
 }
 
 pub fn compile_focused_context(
     input: FocusedContextCompileInput,
 ) -> KernelResult<FocusedContextSnapshot> {
     validate_focus_frame(&input.focus_frame, &input.context)?;
+    let knowledge_context = input
+        .knowledge
+        .map(|knowledge| compile_knowledge_context(knowledge, &input.focus_frame))
+        .transpose()
+        .map_err(|error| KernelError::Validation(error.to_string()))?;
 
     let included_refs = included_refs(&input.focus_frame);
     let excluded_refs = excluded_refs(&input.focus_frame);
@@ -100,6 +110,7 @@ pub fn compile_focused_context(
         context_snapshot,
         selected_memory_refs,
         omitted_memory_refs,
+        knowledge_context,
     })
 }
 
@@ -203,8 +214,14 @@ fn record_omitted_turn(turn: &ContextTurn, reason: &str, omitted: &mut Vec<Omitt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::contracts::{FocusBranchKind, FocusMemoryScope};
-    use crate::domain::{BranchType, ContentBlock};
+    use crate::domain::contracts::{
+        FocusBranchKind, FocusMemoryScope, GeneratorKind, GeneratorRef, KnowledgeEntity,
+        KnowledgeEntityKind, KnowledgeScope, KnowledgeStatus,
+    };
+    use crate::domain::{
+        BranchType, ContentBlock, KnowledgeContextCompileInput, KnowledgeRetrievalCandidate,
+        KnowledgeRetrievalContext,
+    };
 
     fn turn(id: &str) -> ContextTurn {
         ContextTurn {
@@ -250,11 +267,41 @@ mod tests {
         }
     }
 
+    fn knowledge_candidate() -> KnowledgeRetrievalCandidate {
+        KnowledgeRetrievalCandidate {
+            entity: KnowledgeEntity {
+                contract_version: "mindscape.knowledge.v1".into(),
+                id: "entity-1".into(),
+                kind: KnowledgeEntityKind::Decision,
+                name: "Use FocusFrame".into(),
+                aliases: vec![],
+                scope: KnowledgeScope::Project {
+                    workspace_id: "workspace-1".into(),
+                    project_id: "project-1".into(),
+                },
+                status: KnowledgeStatus::Confirmed,
+                revision: 2,
+                evidence: vec![],
+                generator: GeneratorRef {
+                    kind: GeneratorKind::User,
+                    generator_id: "user".into(),
+                    generator_version: "v1".into(),
+                },
+                created_at: "2026-08-24T00:00:00Z".into(),
+                updated_at: "2026-08-24T01:00:00Z".into(),
+            },
+            evidence: vec![],
+            retrieval_score: 100,
+            estimated_tokens: 4,
+        }
+    }
+
     #[test]
     fn same_parent_with_different_focus_frames_selects_different_context() {
         let continued = compile_focused_context(FocusedContextCompileInput {
             context: context(),
             focus_frame: frame("focus-continue", FocusContextPolicy::ContinueCurrent),
+            knowledge: None,
         })
         .expect("compile continued focus");
         let mut focused_frame = frame("focus-new", FocusContextPolicy::FocusNew);
@@ -263,6 +310,7 @@ mod tests {
         let focused = compile_focused_context(FocusedContextCompileInput {
             context: context(),
             focus_frame: focused_frame,
+            knowledge: None,
         })
         .expect("compile new focus");
 
@@ -294,6 +342,7 @@ mod tests {
         let snapshot = compile_focused_context(FocusedContextCompileInput {
             context: context(),
             focus_frame,
+            knowledge: None,
         })
         .expect("compile excluded focus");
 
@@ -315,9 +364,39 @@ mod tests {
         let error = compile_focused_context(FocusedContextCompileInput {
             context: context(),
             focus_frame,
+            knowledge: None,
         })
         .expect_err("reject overlapping memory sets");
 
         assert!(error.to_string().contains("more than one set"));
+    }
+
+    #[test]
+    fn focused_snapshot_carries_a_budgeted_knowledge_selection() {
+        let mut focus_frame = frame("focus-knowledge", FocusContextPolicy::FocusNew);
+        focus_frame.include_refs = vec!["entity-1".into()];
+        let snapshot = compile_focused_context(FocusedContextCompileInput {
+            context: context(),
+            focus_frame,
+            knowledge: Some(KnowledgeContextCompileInput {
+                candidates: vec![knowledge_candidate()],
+                retrieval_context: KnowledgeRetrievalContext {
+                    workspace_id: "workspace-1".into(),
+                    project_id: Some("project-1".into()),
+                    conversation_id: "conversation-1".into(),
+                    focus_frame_id: "focus-knowledge".into(),
+                },
+                retrieval_version: "fts-v1".into(),
+                max_tokens: Some(8),
+            }),
+        })
+        .expect("compile focused knowledge context");
+
+        let knowledge = snapshot
+            .knowledge_context
+            .expect("knowledge context selection");
+        assert_eq!(knowledge.estimated_tokens, 4);
+        assert_eq!(knowledge.selected[0].entity_id, "entity-1");
+        assert!(knowledge.omitted.is_empty());
     }
 }

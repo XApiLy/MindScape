@@ -1,8 +1,12 @@
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::contracts::{
-    FocusBranchKind, FocusFrame, GeneratorRef, KnowledgeEntity, KnowledgeScope, KnowledgeStatus,
+    EvidenceRef, FocusBranchKind, FocusFrame, GeneratorRef, KnowledgeEntity, KnowledgeScope,
+    KnowledgeStatus,
 };
+
+pub const KNOWLEDGE_CONTEXT_CONTRACT_VERSION: &str = "mindscape.knowledge-context.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnowledgeAction {
@@ -48,6 +52,67 @@ pub struct KnowledgeRetrievalContext {
     pub project_id: Option<String>,
     pub conversation_id: String,
     pub focus_frame_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeRetrievalCandidate {
+    pub entity: KnowledgeEntity,
+    pub evidence: Vec<EvidenceRef>,
+    pub retrieval_score: i64,
+    pub estimated_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeContextReference {
+    pub entity_id: String,
+    pub status: KnowledgeStatus,
+    pub scope: KnowledgeScope,
+    pub revision: u64,
+    pub evidence: Vec<EvidenceRef>,
+    pub retrieval_score: i64,
+    pub estimated_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OmittedKnowledgeRef {
+    pub reference_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeContextSelection {
+    pub contract_version: String,
+    pub retrieval_version: String,
+    pub selected: Vec<KnowledgeContextReference>,
+    pub omitted: Vec<OmittedKnowledgeRef>,
+    pub estimated_tokens: i64,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum KnowledgeContextCompileError {
+    #[error("knowledge retrieval version must not be empty")]
+    EmptyRetrievalVersion,
+    #[error("knowledge context token budget must be greater than zero")]
+    InvalidBudget,
+    #[error("knowledge candidate {entity_id} appears more than once")]
+    DuplicateCandidate { entity_id: String },
+    #[error("knowledge candidate {entity_id} has an empty entity ID")]
+    EmptyCandidateId { entity_id: String },
+    #[error("knowledge candidate {entity_id} must have a positive token estimate")]
+    InvalidCandidateTokens { entity_id: String },
+    #[error("knowledge context token estimate overflowed")]
+    TokenOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeContextCompileInput {
+    pub candidates: Vec<KnowledgeRetrievalCandidate>,
+    pub retrieval_context: KnowledgeRetrievalContext,
+    pub retrieval_version: String,
+    pub max_tokens: Option<i64>,
 }
 
 pub fn transition_entity(
@@ -154,6 +219,91 @@ pub fn retrieval_decision(
     }
 }
 
+pub fn compile_knowledge_context(
+    input: KnowledgeContextCompileInput,
+    focus_frame: &FocusFrame,
+) -> Result<KnowledgeContextSelection, KnowledgeContextCompileError> {
+    if input.retrieval_version.trim().is_empty() {
+        return Err(KnowledgeContextCompileError::EmptyRetrievalVersion);
+    }
+    if matches!(input.max_tokens, Some(limit) if limit <= 0) {
+        return Err(KnowledgeContextCompileError::InvalidBudget);
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for candidate in &input.candidates {
+        if candidate.entity.id.trim().is_empty() {
+            return Err(KnowledgeContextCompileError::EmptyCandidateId {
+                entity_id: candidate.entity.id.clone(),
+            });
+        }
+        if candidate.estimated_tokens <= 0 {
+            return Err(KnowledgeContextCompileError::InvalidCandidateTokens {
+                entity_id: candidate.entity.id.clone(),
+            });
+        }
+        if !seen.insert(candidate.entity.id.clone()) {
+            return Err(KnowledgeContextCompileError::DuplicateCandidate {
+                entity_id: candidate.entity.id.clone(),
+            });
+        }
+    }
+
+    let mut candidates = input.candidates;
+    candidates.sort_by(|left, right| {
+        right
+            .retrieval_score
+            .cmp(&left.retrieval_score)
+            .then_with(|| left.entity.id.cmp(&right.entity.id))
+    });
+
+    let mut selected = Vec::new();
+    let mut omitted = Vec::new();
+    let mut estimated_tokens = 0_i64;
+    for candidate in candidates {
+        match retrieval_decision(&candidate.entity, focus_frame, &input.retrieval_context) {
+            KnowledgeRetrievalDecision::Excluded => omitted.push(OmittedKnowledgeRef {
+                reference_id: candidate.entity.id,
+                reason: "excluded by knowledge status, scope, or FocusFrame".into(),
+            }),
+            KnowledgeRetrievalDecision::CandidateOnly => omitted.push(OmittedKnowledgeRef {
+                reference_id: candidate.entity.id,
+                reason: "candidate knowledge cannot be injected as a confirmed fact".into(),
+            }),
+            KnowledgeRetrievalDecision::Confirmed => {
+                let next_tokens = estimated_tokens
+                    .checked_add(candidate.estimated_tokens)
+                    .ok_or(KnowledgeContextCompileError::TokenOverflow)?;
+                if input.max_tokens.is_some_and(|limit| next_tokens > limit) {
+                    omitted.push(OmittedKnowledgeRef {
+                        reference_id: candidate.entity.id,
+                        reason: "omitted to satisfy the knowledge context token budget".into(),
+                    });
+                    continue;
+                }
+                estimated_tokens = next_tokens;
+                selected.push(KnowledgeContextReference {
+                    entity_id: candidate.entity.id,
+                    status: candidate.entity.status,
+                    scope: candidate.entity.scope,
+                    revision: candidate.entity.revision,
+                    evidence: candidate.evidence,
+                    retrieval_score: candidate.retrieval_score,
+                    estimated_tokens: candidate.estimated_tokens,
+                });
+            }
+        }
+    }
+
+    Ok(KnowledgeContextSelection {
+        contract_version: KNOWLEDGE_CONTEXT_CONTRACT_VERSION.into(),
+        retrieval_version: input.retrieval_version,
+        selected,
+        omitted,
+        estimated_tokens,
+    })
+}
+
 fn scope_matches(
     scope: &KnowledgeScope,
     focus_frame: &FocusFrame,
@@ -245,6 +395,28 @@ mod tests {
             project_id: Some("project-1".into()),
             conversation_id: "conversation-1".into(),
             focus_frame_id: "focus-1".into(),
+        }
+    }
+
+    fn candidate(
+        status: KnowledgeStatus,
+        id: &str,
+        retrieval_score: i64,
+        estimated_tokens: i64,
+    ) -> KnowledgeRetrievalCandidate {
+        let mut entity = entity(
+            status,
+            KnowledgeScope::Project {
+                workspace_id: "workspace-1".into(),
+                project_id: "project-1".into(),
+            },
+        );
+        entity.id = id.into();
+        KnowledgeRetrievalCandidate {
+            entity,
+            evidence: vec![],
+            retrieval_score,
+            estimated_tokens,
         }
     }
 
@@ -394,6 +566,82 @@ mod tests {
             retrieval_decision(&rejected, &mainline, &context()),
             KnowledgeRetrievalDecision::Excluded
         );
+    }
+
+    #[test]
+    fn compiler_selects_confirmed_candidates_in_score_order_with_budget_omissions() {
+        let mainline = frame(FocusBranchKind::Mainline);
+        let selection = compile_knowledge_context(
+            KnowledgeContextCompileInput {
+                candidates: vec![
+                    candidate(KnowledgeStatus::Confirmed, "entity-low", 10, 3),
+                    candidate(KnowledgeStatus::Confirmed, "entity-high", 20, 3),
+                ],
+                retrieval_context: context(),
+                retrieval_version: "fts-v1+vector-v1".into(),
+                max_tokens: Some(5),
+            },
+            &mainline,
+        )
+        .expect("compile confirmed knowledge");
+
+        assert_eq!(
+            selection
+                .selected
+                .iter()
+                .map(|reference| reference.entity_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entity-high"]
+        );
+        assert_eq!(selection.estimated_tokens, 3);
+        assert_eq!(selection.omitted[0].reference_id, "entity-low");
+        assert!(selection.omitted[0].reason.contains("token budget"));
+    }
+
+    #[test]
+    fn compiler_never_injects_candidate_only_knowledge() {
+        let mut task = frame(FocusBranchKind::Task);
+        task.include_refs = vec!["entity-candidate".into()];
+        let selection = compile_knowledge_context(
+            KnowledgeContextCompileInput {
+                candidates: vec![candidate(
+                    KnowledgeStatus::Candidate,
+                    "entity-candidate",
+                    100,
+                    2,
+                )],
+                retrieval_context: context(),
+                retrieval_version: "fts-v1".into(),
+                max_tokens: None,
+            },
+            &task,
+        )
+        .expect("compile candidate knowledge");
+
+        assert!(selection.selected.is_empty());
+        assert_eq!(selection.omitted[0].reference_id, "entity-candidate");
+        assert!(selection.omitted[0].reason.contains("confirmed fact"));
+    }
+
+    #[test]
+    fn compiler_rejects_duplicate_candidates_before_selection() {
+        let mainline = frame(FocusBranchKind::Mainline);
+        let duplicate = candidate(KnowledgeStatus::Confirmed, "entity-1", 1, 1);
+        let error = compile_knowledge_context(
+            KnowledgeContextCompileInput {
+                candidates: vec![duplicate.clone(), duplicate],
+                retrieval_context: context(),
+                retrieval_version: "fts-v1".into(),
+                max_tokens: None,
+            },
+            &mainline,
+        )
+        .expect_err("duplicate candidates must be rejected");
+
+        assert!(matches!(
+            error,
+            KnowledgeContextCompileError::DuplicateCandidate { .. }
+        ));
     }
 
     #[test]

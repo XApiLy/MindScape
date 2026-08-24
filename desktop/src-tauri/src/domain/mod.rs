@@ -27,6 +27,9 @@ pub use focused_context::{
     compile_focused_context,
 };
 pub use knowledge::{
-    KnowledgeAction, KnowledgeRetrievalContext, KnowledgeRetrievalDecision, KnowledgeTransition,
-    KnowledgeTransitionError, retrieval_decision, transition_entity,
+    KNOWLEDGE_CONTEXT_CONTRACT_VERSION, KnowledgeAction, KnowledgeContextCompileError,
+    KnowledgeContextCompileInput, KnowledgeContextReference, KnowledgeContextSelection,
+    KnowledgeRetrievalCandidate, KnowledgeRetrievalContext, KnowledgeRetrievalDecision,
+    KnowledgeTransition, KnowledgeTransitionError, OmittedKnowledgeRef, compile_knowledge_context,
+    retrieval_decision, transition_entity,
 };

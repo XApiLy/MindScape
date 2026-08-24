@@ -20,7 +20,7 @@
 - 上下文策略、允许能力、工具权限与预算封套。
 - 每个关键值的来源和运行时能力快照。
 
-本切片只冻结类型。员工05负责能力校验和 Provider 映射；员工02负责不可变持久化。两者评审通过后才接入 `ModelRunRequest`，避免 UI、Provider 和 SQLite 各自定义运行档案。
+首切片已冻结类型；员工05现已将其作为可选加法字段接入 `ModelRunRequest`、应用幂等比较和 OpenAI-compatible 发送前校验，未提供时保持 M1 行为。员工02仍负责后续不可变持久化；员工04尚未完成 UI 构造与真实运行档案选择。所有接线必须继续避免 UI、Provider 和 SQLite 各自定义运行档案。
 
 ## 3. ARC-M2-002 / CORE-M2-001～002：FocusFrame
 
@@ -73,9 +73,20 @@
 
 纯领域入口为 `transition_entity` 与 `retrieval_decision`，不读写 SQLite，不改变画布或 Markdown 文件。
 
-## 8. 本切片验证与未完成项
+## 8. CORE-M2-004：知识上下文编译边界
+
+- `KnowledgeRetrievalCandidate` 只代表索引层候选，不代表可直接注入模型的事实；候选必须带实体快照、EvidenceRef、检索分数和正数 Token 估算。
+- `compile_knowledge_context` 先按确认状态、作用域和 FocusFrame 规则门控，再按检索分数降序、实体 ID 升序稳定排序，最后执行知识 Token 预算。
+- `confirmed` 候选才可进入 `KnowledgeContextSelection.selected`；`candidate/inferred`、拒绝/取代/过期、作用域不匹配、排除项和预算外候选进入 `omitted`，并保留可解释原因。
+- 选择结果记录 `retrievalVersion`、实体 revision、scope、EvidenceRef、检索分数和估算 Token；`FocusedContextSnapshot.knowledgeContext` 以可选加法字段承载它，不改变旧 `ContextSnapshot`。
+- 重复候选、空检索版本、非法预算、空实体 ID、非正 Token 估算和 Token 溢出均显式失败；不静默截断或重排为未确认事实。
+
+纯领域入口为 `compile_knowledge_context`，不读写 SQLite、全文/向量索引或 Provider；索引适配、关系扩展和持久化由员工02/05后续实现。
+
+## 9. 本切片验证与未完成项
 
 - Rust 契约序列化覆盖运行档案、知识作用域/状态/证据和禁生成式原样导入。
 - FocusFrame 覆盖同父节点不同焦点、排除单条消息时整轮隔离、集合冲突拒绝。
 - 知识状态机覆盖确认、否决、取代、过期、revision 递增和禁止复活；分支规则覆盖任务分支污染阻断、显式继承和候选不冒充事实。
-- 尚未完成：生命周期命令、SQLite 持久化、Markdown 修订、实际导入解析、全文/向量检索编译和 Provider 映射。这些不得从本 Draft 推断为已交付。
+- 知识上下文编译覆盖确认候选排序、预算排除、候选不注入、重复拒绝和 FocusedContextSnapshot 加法接线。
+- 尚未完成：运行档案 UI 选择与创建前体验、FocusFrame/知识生命周期命令、SQLite 持久化、Markdown 修订、实际导入解析、全文/向量索引适配、关系扩展、删除失效和 M2 纵向验收。这些不得从本 Draft 推断为已交付。

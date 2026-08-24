@@ -1,4 +1,5 @@
 import type { ContextSnapshot } from "./context";
+import type { KnowledgeContextSelection } from "./knowledge";
 
 export type FocusContextPolicy =
   | "continueCurrent"
@@ -42,4 +43,5 @@ export type FocusedContextSnapshot = {
   contextSnapshot: ContextSnapshot;
   selectedMemoryRefs: string[];
   omittedMemoryRefs: OmittedFocusRef[];
+  knowledgeContext: KnowledgeContextSelection | null;
 };
