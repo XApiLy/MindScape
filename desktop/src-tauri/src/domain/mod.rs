@@ -4,6 +4,7 @@ mod conversation;
 mod credentials;
 mod error;
 mod focused_context;
+mod imports;
 mod knowledge;
 
 pub mod contracts;
@@ -26,6 +27,7 @@ pub use focused_context::{
     FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,
     compile_focused_context,
 };
+pub use imports::{ImportBundleValidationError, validate_import_bundle};
 pub use knowledge::{
     KNOWLEDGE_CONTEXT_CONTRACT_VERSION, KnowledgeAction, KnowledgeContextCompileError,
     KnowledgeContextCompileInput, KnowledgeContextReference, KnowledgeContextSelection,

@@ -20,7 +20,7 @@
 - 上下文策略、允许能力、工具权限与预算封套。
 - 每个关键值的来源和运行时能力快照。
 
-首切片已冻结类型；员工05现已将其作为可选加法字段接入 `ModelRunRequest`、应用幂等比较和 OpenAI-compatible 发送前校验，未提供时保持 M1 行为。员工02仍负责后续不可变持久化；员工04尚未完成 UI 构造与真实运行档案选择。所有接线必须继续避免 UI、Provider 和 SQLite 各自定义运行档案。
+首切片已冻结类型；员工05现已将其作为可选加法字段接入 `ModelRunRequest`、应用幂等比较和 OpenAI-compatible 发送前校验，未提供时保持 M1 行为。员工04已补齐功能占位 UI，可从能力目录构造档案并随 IPC 发送；员工02仍负责后续不可变持久化，真实 Key/重启投影验收尚未完成。所有接线必须继续避免 UI、Provider 和 SQLite 各自定义运行档案。
 
 ## 3. ARC-M2-002 / CORE-M2-001～002：FocusFrame
 
@@ -54,6 +54,7 @@
 - `RawTrackEntry` 以顺序、来源定位和内容哈希连接 ImportSource、ImportRevision 与 ImportedMessage。
 - `ImportGraphProjection.analysisPolicy` 目前只有 `disabled`，确保“原样继续”不会触发生成式分析或费用。
 - 未知内容继续使用 V1 `Unsupported` ContentBlock 和原始 JSON 保存；ParseReport 必须报告恢复程度和警告。
+- `validate_import_bundle` 是命令/存储层共用的纯领域预检：校验 source/revision/report 引用、消息 revision、消息 ID、source locator、父消息图和 ParseReport message count；失败不得提交半个 bundle。
 
 ## 6. 跨团队消费规则
 
@@ -89,4 +90,4 @@
 - FocusFrame 覆盖同父节点不同焦点、排除单条消息时整轮隔离、集合冲突拒绝。
 - 知识状态机覆盖确认、否决、取代、过期、revision 递增和禁止复活；分支规则覆盖任务分支污染阻断、显式继承和候选不冒充事实。
 - 知识上下文编译覆盖确认候选排序、预算排除、候选不注入、重复拒绝和 FocusedContextSnapshot 加法接线。
-- 尚未完成：运行档案 UI 选择与创建前体验、FocusFrame/知识生命周期命令、SQLite 持久化、Markdown 修订、实际导入解析、全文/向量索引适配、关系扩展、删除失效和 M2 纵向验收。这些不得从本 Draft 推断为已交付。
+- 尚未完成：运行档案不可变查询/重启投影与真实 Key 验收、FocusFrame/知识生命周期命令、SQLite 知识持久化、Markdown 修订、实际导入解析、全文/向量索引适配、关系扩展、删除失效和 M2 纵向验收。这些不得从本 Draft 推断为已交付。
