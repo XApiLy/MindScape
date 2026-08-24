@@ -9,6 +9,54 @@ export type CapabilityRequirement =
   | "toolCalling"
   | "usageReporting";
 
+export type ReasoningMode = "off" | "standard" | "deep" | "custom";
+export type ToolPermission = "disabled" | "automatic" | "askEachTime";
+export type RunValueOrigin =
+  | "user"
+  | "conversation"
+  | "project"
+  | "systemRecommendation"
+  | "providerConstraint";
+
+export type GenerationParameters = {
+  temperature: number | null;
+  topP: number | null;
+  maxOutputTokens: number | null;
+  responseFormat: string | null;
+  seed: number | null;
+  vendorParameters: Record<string, unknown>;
+};
+
+export type RunBudgetEnvelope = {
+  maxInputTokens: number | null;
+  maxReasoningTokens: number | null;
+  maxOutputTokens: number | null;
+  maxCostMicrounits: number | null;
+  timeoutMs: number;
+};
+
+export type RunCapabilitySnapshot = {
+  catalogVersion: string;
+  contextWindowTokens: number | null;
+  supportedCapabilities: CapabilityRequirement[];
+  unsupportedParameters: string[];
+};
+
+export type EffectiveRunProfile = {
+  contractVersion: string;
+  providerId: string;
+  modelId: string;
+  reasoningMode: ReasoningMode;
+  reasoningBudget: number | null;
+  generationParameters: GenerationParameters;
+  contextPolicy: string;
+  allowedCapabilities: CapabilityRequirement[];
+  toolPermission: ToolPermission;
+  budgetEnvelope: RunBudgetEnvelope;
+  valueOrigins: Record<string, RunValueOrigin>;
+  capabilitySnapshot: RunCapabilitySnapshot;
+};
+
 export type ModelRunBudget = {
   maxOutputTokens: number | null;
   maxCostMicrounits: number | null;

@@ -5,6 +5,40 @@ import type { EvidenceRef } from "./evidence";
 export type ImportPlatform = "chatGpt" | "claude" | "codex" | "generic";
 export type ImportRevisionStatus = "parsing" | "parsed" | "partiallyParsed" | "failed";
 export type RecoveryStatus = "recovered" | "partial" | "unavailable";
+export type ImportFormat = "markdown" | "jsonLines" | "text" | "json";
+export type ImportIngress = "filePicker" | "dragAndDrop" | "paste";
+export type ImportAnalysisPolicy = "disabled";
+
+export type GenericImportDescriptor = {
+  contractVersion: string;
+  importSourceId: string;
+  format: ImportFormat;
+  ingress: ImportIngress;
+  mediaType: string | null;
+  encoding: string;
+  byteLength: number;
+  contentHash: string;
+  immutableStorageRef: string;
+};
+
+export type RawTrackEntry = {
+  id: string;
+  importSourceId: string;
+  importRevisionId: string;
+  importedMessageId: string;
+  sourceLocator: string;
+  contentHash: string;
+  ordinal: number;
+};
+
+export type ImportGraphProjection = {
+  importSourceId: string;
+  importRevisionId: string;
+  conversationId: string;
+  entryNodeId: string;
+  rawTrackEntryIds: string[];
+  analysisPolicy: ImportAnalysisPolicy;
+};
 
 export type ImportSource = {
   id: string;

@@ -5,6 +5,67 @@ use crate::domain::{ContentBlock, MessageRole};
 use super::EvidenceRef;
 
 pub const IMPORT_CONTRACT_VERSION: &str = "mindscape.import.v1";
+pub const GENERIC_IMPORT_CONTRACT_VERSION: &str = "mindscape.generic-import.v1";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportFormat {
+    Markdown,
+    JsonLines,
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportIngress {
+    FilePicker,
+    DragAndDrop,
+    Paste,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportAnalysisPolicy {
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericImportDescriptor {
+    pub contract_version: String,
+    pub import_source_id: String,
+    pub format: ImportFormat,
+    pub ingress: ImportIngress,
+    pub media_type: Option<String>,
+    pub encoding: String,
+    pub byte_length: u64,
+    pub content_hash: String,
+    pub immutable_storage_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RawTrackEntry {
+    pub id: String,
+    pub import_source_id: String,
+    pub import_revision_id: String,
+    pub imported_message_id: String,
+    pub source_locator: String,
+    pub content_hash: String,
+    pub ordinal: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportGraphProjection {
+    pub import_source_id: String,
+    pub import_revision_id: String,
+    pub conversation_id: String,
+    pub entry_node_id: String,
+    pub raw_track_entry_ids: Vec<String>,
+    pub analysis_policy: ImportAnalysisPolicy,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

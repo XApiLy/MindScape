@@ -3,6 +3,7 @@ mod context;
 mod conversation;
 mod credentials;
 mod error;
+mod focused_context;
 
 pub mod contracts;
 
@@ -20,3 +21,7 @@ pub use conversation::{
 };
 pub use credentials::{CredentialError, CredentialRef, CredentialResult, SetCredentialInput};
 pub use error::{KernelError, KernelResult};
+pub use focused_context::{
+    FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,
+    compile_focused_context,
+};

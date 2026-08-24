@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{ContextSnapshot, RunState};
 
 pub const RUNTIME_CONTRACT_VERSION: &str = "mindscape.runtime.v1";
 pub const APPLICATION_INTERRUPTED_PROVIDER_CODE: &str = "application_interrupted";
+pub const EFFECTIVE_RUN_PROFILE_CONTRACT_VERSION: &str = "mindscape.effective-run-profile.v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +15,80 @@ pub enum CapabilityRequirement {
     ImageInput,
     ToolCalling,
     UsageReporting,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningMode {
+    Off,
+    Standard,
+    Deep,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolPermission {
+    Disabled,
+    Automatic,
+    AskEachTime,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RunValueOrigin {
+    User,
+    Conversation,
+    Project,
+    SystemRecommendation,
+    ProviderConstraint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationParameters {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub max_output_tokens: Option<u64>,
+    pub response_format: Option<String>,
+    pub seed: Option<i64>,
+    pub vendor_parameters: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunBudgetEnvelope {
+    pub max_input_tokens: Option<u64>,
+    pub max_reasoning_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub max_cost_microunits: Option<u64>,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCapabilitySnapshot {
+    pub catalog_version: String,
+    pub context_window_tokens: Option<u64>,
+    pub supported_capabilities: Vec<CapabilityRequirement>,
+    pub unsupported_parameters: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveRunProfile {
+    pub contract_version: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub reasoning_mode: ReasoningMode,
+    pub reasoning_budget: Option<u64>,
+    pub generation_parameters: GenerationParameters,
+    pub context_policy: String,
+    pub allowed_capabilities: Vec<CapabilityRequirement>,
+    pub tool_permission: ToolPermission,
+    pub budget_envelope: RunBudgetEnvelope,
+    pub value_origins: BTreeMap<String, RunValueOrigin>,
+    pub capability_snapshot: RunCapabilitySnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
