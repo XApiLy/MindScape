@@ -26,9 +26,9 @@ pub use conversation::{
 pub use credentials::{CredentialError, CredentialRef, CredentialResult, SetCredentialInput};
 pub use error::{KernelError, KernelResult};
 pub use focus_lifecycle::{
-    FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleError,
-    FocusFrameLifecycleSnapshot, FocusFrameLifecycleStatus, close_focus_frame, reopen_focus_frame,
-    transition_focus_frame,
+    FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleCommandInput,
+    FocusFrameLifecycleError, FocusFrameLifecycleSnapshot, FocusFrameLifecycleStatus,
+    close_focus_frame, reopen_focus_frame, transition_focus_frame,
 };
 pub use focus_query::{
     FOCUS_QUERY_CONTRACT_VERSION, FocusFrameQueryProjection, validate_focus_frame_query_projection,

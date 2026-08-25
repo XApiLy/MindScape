@@ -43,6 +43,8 @@
 
 `FocusFrameQueryProjection`（`mindscape.focus-query.v1`）是 UI/查询适配器的只读边界：`lifecycle` 始终是状态权威，`focusedContext` 可以为空（尚未编译或历史快照暂不可用）。查询投影校验 FocusFrame ID、会话 ID 和 FocusedContext 契约版本，拒绝跨 FocusFrame 或跨会话拼接；前端不得自行推断 Active/Closed、重算知识选择或从空值伪造“无知识”。
 
+当前 Tauri 命令名固定为：`create_focus_frame`（创建 Active/revision=1）、`get_focus_frame_query`（返回只读投影）、`close_focus_frame` 与 `reopen_focus_frame`（均接收 `focusFrameId`、`expectedRevision`、`updatedAt`，并返回更新后的查询投影）。关闭/恢复命令必须经过 KernelService 的领域状态机和 SQLite 乐观 revision 校验；FocusedContext 查询持久化尚未接入时只能返回 `null`，不得伪造已编译快照。
+
 ## 4. ARC-M2-003～004：知识与 Markdown 投影
 
 - 实体类型固定为 Goal、Decision、Constraint、Question、Source、Project、Topic。

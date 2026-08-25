@@ -23,6 +23,14 @@ pub struct FocusFrameLifecycleSnapshot {
     pub closed_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusFrameLifecycleCommandInput {
+    pub focus_frame_id: String,
+    pub expected_revision: u64,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusFrameLifecycleAction {
     Close,
