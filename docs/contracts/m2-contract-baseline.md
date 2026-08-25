@@ -78,6 +78,8 @@
 - 候选或推断即使被显式选入，也只能以 `CandidateOnly` 返回，不能作为已确认事实注入 Context Compiler。
 - `exclude` 优先于 `include`/`inherit`；拒绝、取代、过期状态优先于任何 FocusFrame 选择。
 
+KnowledgeEntity、KnowledgeRelation、ScopedEvidenceRef 和 EvidenceRef 在进入 SQLite/索引前必须通过领域校验：契约版本、稳定 ID、作用域、generator、revision、时间戳和 EvidenceTarget 必须完整；证据引用 ID 不得重复，关系两端不得为空或相同。校验失败不得写入事实源，也不得交给 FTS/VectorIndex 派生索引。
+
 纯领域入口为 `transition_entity` 与 `retrieval_decision`，不读写 SQLite，不改变画布或 Markdown 文件。
 
 ## 8. CORE-M2-004：知识上下文编译边界
