@@ -41,7 +41,7 @@
 
 `FocusFrameLifecycleSnapshot` 以独立加法契约记录 `active/closed`、revision、更新时间和关闭时间。纯领域入口 `close_focus_frame` / `reopen_focus_frame` 只允许 Active→Closed、Closed→Active，保持 FocusFrame 稳定 ID；持久化、切换查询和启动恢复由数据/命令层接入。
 
-`FocusFrameQueryProjection`（`mindscape.focus-query.v1`）是 UI/查询适配器的只读边界：`lifecycle` 始终是状态权威，`focusedContext` 可以为空（尚未编译或历史快照暂不可用）。查询投影会复用 FocusedContextSnapshot 的持久化校验：检查快照/上下文契约版本、稳定 ID、会话与父节点一致性、记忆引用唯一性，以及知识选择的检索版本、引用唯一性和 Token 汇总；拒绝跨 FocusFrame 或跨会话拼接。前端不得自行推断 Active/Closed、重算知识选择或从空值伪造“无知识”。
+`FocusFrameQueryProjection`（`mindscape.focus-query.v1`）是 UI/查询适配器的只读边界：`lifecycle` 始终是状态权威，`focusedContext` 可以为空（尚未编译或历史快照暂不可用）。查询投影会校验生命周期契约、FocusFrame、revision、更新时间和 active/closed 元数据，并复用 FocusedContextSnapshot 的持久化校验：检查快照/上下文契约版本、稳定 ID、会话与父节点一致性、记忆引用唯一性，以及知识选择的检索版本、引用唯一性和 Token 汇总；拒绝跨 FocusFrame 或跨会话拼接。前端不得自行推断 Active/Closed、重算知识选择或从空值伪造“无知识”。
 
 当前 Tauri 命令名固定为：`create_focus_frame`（创建 Active/revision=1）、`get_focus_frame_query`（按稳定 ID返回只读投影）、`list_focus_frames`（按 conversationId 返回按更新时间排序的生命周期投影集合）、`close_focus_frame` 与 `reopen_focus_frame`（均接收 `focusFrameId`、`expectedRevision`、`updatedAt`，并返回更新后的查询投影）。关闭/恢复命令必须经过 KernelService 的领域状态机和 SQLite 乐观 revision 校验；FocusedContext 查询持久化尚未接入时只能返回 `null`，不得伪造已编译快照。前端必须使用列表查询发现当前会话的 FocusFrame，不得从节点坐标或 React 状态猜测 ID。
 

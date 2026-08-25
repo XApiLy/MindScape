@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::contracts::FocusFrame;
+use super::{KernelError, KernelResult, contracts::FocusFrame};
 
 pub const FOCUS_LIFECYCLE_CONTRACT_VERSION: &str = "mindscape.focus-lifecycle.v1";
 
@@ -21,6 +21,46 @@ pub struct FocusFrameLifecycleSnapshot {
     pub revision: u64,
     pub updated_at: String,
     pub closed_at: Option<String>,
+}
+
+impl FocusFrameLifecycleSnapshot {
+    /// Validate a lifecycle record restored from storage before it is exposed
+    /// as query truth. Lifecycle transitions only operate on valid snapshots;
+    /// this also prevents an active frame with stale close metadata from
+    /// leaking into the UI after restart.
+    pub fn validate(&self) -> KernelResult<()> {
+        if self.contract_version != FOCUS_LIFECYCLE_CONTRACT_VERSION {
+            return Err(KernelError::Validation(format!(
+                "unsupported FocusFrame lifecycle contract version: {}",
+                self.contract_version
+            )));
+        }
+        self.frame.validate()?;
+        if self.revision == 0 {
+            return Err(KernelError::Validation(
+                "FocusFrame lifecycle revision must be greater than zero".into(),
+            ));
+        }
+        if self.updated_at.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "FocusFrame lifecycle updated at must not be empty".into(),
+            ));
+        }
+        match (self.status, self.closed_at.as_deref()) {
+            (FocusFrameLifecycleStatus::Active, None) => Ok(()),
+            (FocusFrameLifecycleStatus::Active, Some(_)) => Err(KernelError::Integrity(
+                "active FocusFrame lifecycle cannot have closedAt".into(),
+            )),
+            (FocusFrameLifecycleStatus::Closed, Some(closed_at))
+                if !closed_at.trim().is_empty() =>
+            {
+                Ok(())
+            }
+            (FocusFrameLifecycleStatus::Closed, _) => Err(KernelError::Validation(
+                "closed FocusFrame lifecycle requires a non-empty closedAt".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,5 +235,46 @@ mod tests {
             close_focus_frame(&overflow, "2026-08-25T01:00:00Z"),
             Err(FocusFrameLifecycleError::RevisionOverflow { .. })
         ));
+    }
+
+    #[test]
+    fn lifecycle_validation_rejects_impossible_restored_states() {
+        let mut active = snapshot(FocusFrameLifecycleStatus::Active);
+        active.validate().expect("valid active lifecycle");
+
+        active.closed_at = Some("2026-08-25T01:00:00Z".into());
+        let error = active
+            .validate()
+            .expect_err("active lifecycle must not carry close metadata");
+        assert!(error.to_string().contains("cannot have closedAt"));
+
+        let mut closed = snapshot(FocusFrameLifecycleStatus::Closed);
+        let error = closed
+            .validate()
+            .expect_err("closed lifecycle requires close metadata");
+        assert!(error.to_string().contains("requires a non-empty closedAt"));
+        closed.closed_at = Some("2026-08-25T01:00:00Z".into());
+        closed.validate().expect("valid closed lifecycle");
+    }
+
+    #[test]
+    fn lifecycle_validation_rejects_zero_revision_and_unknown_contract() {
+        let mut invalid = snapshot(FocusFrameLifecycleStatus::Active);
+        invalid.revision = 0;
+        let error = invalid.validate().expect_err("zero revision");
+        assert!(
+            error
+                .to_string()
+                .contains("revision must be greater than zero")
+        );
+
+        invalid.revision = 1;
+        invalid.contract_version = "mindscape.focus-lifecycle.v0".into();
+        let error = invalid.validate().expect_err("unknown lifecycle contract");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported FocusFrame lifecycle")
+        );
     }
 }

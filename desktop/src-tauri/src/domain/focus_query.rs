@@ -34,6 +34,7 @@ pub fn validate_focus_frame_query_projection(
             "FocusFrame query requires a non-empty frame id".into(),
         ));
     }
+    projection.lifecycle.validate()?;
     if let Some(context) = &projection.focused_context {
         validate_focused_context_snapshot(context)?;
         if context.focus_frame.id != projection.lifecycle.frame.id {
@@ -120,5 +121,14 @@ mod tests {
         query.lifecycle.frame.id.clear();
         let error = validate_focus_frame_query_projection(&query).expect_err("reject empty id");
         assert!(error.to_string().contains("non-empty frame id"));
+    }
+
+    #[test]
+    fn rejects_impossible_lifecycle_metadata_before_ui_consumes_the_projection() {
+        let mut query = projection();
+        query.lifecycle.closed_at = Some("2026-08-25T01:00:00Z".into());
+        let error = validate_focus_frame_query_projection(&query)
+            .expect_err("active lifecycle must not carry close metadata");
+        assert!(error.to_string().contains("cannot have closedAt"));
     }
 }
