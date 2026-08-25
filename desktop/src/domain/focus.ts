@@ -56,3 +56,10 @@ export type FocusedContextSnapshot = {
   omittedMemoryRefs: OmittedFocusRef[];
   knowledgeContext: KnowledgeContextSelection | null;
 };
+
+/** Read-only query projection; lifecycle status remains kernel-owned. */
+export type FocusFrameQueryProjection = {
+  contractVersion: "mindscape.focus-query.v1";
+  lifecycle: FocusFrameLifecycleSnapshot;
+  focusedContext: FocusedContextSnapshot | null;
+};

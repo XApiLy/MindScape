@@ -4,6 +4,7 @@ mod conversation;
 mod credentials;
 mod error;
 mod focus_lifecycle;
+mod focus_query;
 mod focused_context;
 mod imports;
 mod knowledge;
@@ -28,6 +29,9 @@ pub use focus_lifecycle::{
     FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleError,
     FocusFrameLifecycleSnapshot, FocusFrameLifecycleStatus, close_focus_frame, reopen_focus_frame,
     transition_focus_frame,
+};
+pub use focus_query::{
+    FOCUS_QUERY_CONTRACT_VERSION, FocusFrameQueryProjection, validate_focus_frame_query_projection,
 };
 pub use focused_context::{
     FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,

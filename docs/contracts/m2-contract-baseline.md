@@ -41,6 +41,8 @@
 
 `FocusFrameLifecycleSnapshot` 以独立加法契约记录 `active/closed`、revision、更新时间和关闭时间。纯领域入口 `close_focus_frame` / `reopen_focus_frame` 只允许 Active→Closed、Closed→Active，保持 FocusFrame 稳定 ID；持久化、切换查询和启动恢复由数据/命令层接入。
 
+`FocusFrameQueryProjection`（`mindscape.focus-query.v1`）是 UI/查询适配器的只读边界：`lifecycle` 始终是状态权威，`focusedContext` 可以为空（尚未编译或历史快照暂不可用）。查询投影校验 FocusFrame ID、会话 ID 和 FocusedContext 契约版本，拒绝跨 FocusFrame 或跨会话拼接；前端不得自行推断 Active/Closed、重算知识选择或从空值伪造“无知识”。
+
 ## 4. ARC-M2-003～004：知识与 Markdown 投影
 
 - 实体类型固定为 Goal、Decision、Constraint、Question、Source、Project、Topic。
