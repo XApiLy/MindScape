@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    FOCUSED_CONTEXT_CONTRACT_VERSION, FocusFrameLifecycleSnapshot, FocusedContextSnapshot,
-    KernelError, KernelResult,
+    FocusFrameLifecycleSnapshot, FocusedContextSnapshot, KernelError, KernelResult,
+    validate_focused_context_snapshot,
 };
 
 pub const FOCUS_QUERY_CONTRACT_VERSION: &str = "mindscape.focus-query.v1";
@@ -35,12 +35,7 @@ pub fn validate_focus_frame_query_projection(
         ));
     }
     if let Some(context) = &projection.focused_context {
-        if context.contract_version != FOCUSED_CONTEXT_CONTRACT_VERSION {
-            return Err(KernelError::Validation(format!(
-                "unsupported FocusedContext contract version: {}",
-                context.contract_version
-            )));
-        }
+        validate_focused_context_snapshot(context)?;
         if context.focus_frame.id != projection.lifecycle.frame.id {
             return Err(KernelError::Integrity(
                 "FocusFrame query lifecycle and context refer to different frames".into(),

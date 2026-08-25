@@ -35,7 +35,7 @@ pub use focus_query::{
 };
 pub use focused_context::{
     FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,
-    compile_focused_context,
+    compile_focused_context, validate_focused_context_snapshot,
 };
 pub use imports::{ImportBundleValidationError, validate_import_bundle};
 pub use knowledge::{

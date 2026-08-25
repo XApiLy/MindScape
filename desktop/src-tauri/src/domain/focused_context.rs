@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     ContextCompileInput, ContextSnapshot, ContextTurn, KernelError, KernelResult,
     OmittedContextRef, compile_context,
+    context::SYSTEM_CONTRACT_VERSION,
     contracts::{FocusContextPolicy, FocusFrame, OmittedFocusRef},
     knowledge::{
         KnowledgeContextCompileInput, KnowledgeContextSelection, compile_knowledge_context,
@@ -29,6 +30,144 @@ pub struct FocusedContextSnapshot {
     pub selected_memory_refs: Vec<String>,
     pub omitted_memory_refs: Vec<OmittedFocusRef>,
     pub knowledge_context: Option<KnowledgeContextSelection>,
+}
+
+/// Validate a persisted or queried focused-context snapshot before it crosses
+/// the application/UI boundary. This keeps the immutable frame and the
+/// derived context from being silently stitched across conversations or
+/// revisions by storage adapters.
+pub fn validate_focused_context_snapshot(snapshot: &FocusedContextSnapshot) -> KernelResult<()> {
+    if snapshot.contract_version != FOCUSED_CONTEXT_CONTRACT_VERSION {
+        return Err(KernelError::Validation(format!(
+            "unsupported FocusedContext contract version: {}",
+            snapshot.contract_version
+        )));
+    }
+    snapshot.focus_frame.validate()?;
+
+    let context = &snapshot.context_snapshot;
+    for (field, value) in [
+        ("ContextSnapshot id", context.id.as_str()),
+        (
+            "ContextSnapshot conversation id",
+            context.conversation_id.as_str(),
+        ),
+        ("ContextSnapshot created at", context.created_at.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(KernelError::Validation(format!(
+                "{field} must not be empty"
+            )));
+        }
+    }
+    if context.system_contract_version != SYSTEM_CONTRACT_VERSION {
+        return Err(KernelError::Validation(format!(
+            "unsupported ContextSnapshot contract version: {}",
+            context.system_contract_version
+        )));
+    }
+    if context.estimated_tokens < 0 {
+        return Err(KernelError::Validation(
+            "ContextSnapshot estimated tokens must not be negative".into(),
+        ));
+    }
+    if context.conversation_id != snapshot.focus_frame.conversation_id {
+        return Err(KernelError::Integrity(
+            "FocusedContext snapshot belongs to a different conversation".into(),
+        ));
+    }
+    if context.parent_node_id != snapshot.focus_frame.parent_node_id {
+        return Err(KernelError::Integrity(
+            "FocusedContext snapshot references a different parent node".into(),
+        ));
+    }
+
+    let mut memory_refs = HashSet::new();
+    for reference in &snapshot.selected_memory_refs {
+        if reference.trim().is_empty() || !memory_refs.insert(reference.as_str()) {
+            return Err(KernelError::Validation(
+                "FocusedContext selected memory references must be non-empty and unique".into(),
+            ));
+        }
+    }
+    for reference in &snapshot.omitted_memory_refs {
+        if reference.reference_id.trim().is_empty() || reference.reason.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "FocusedContext omitted memory references require an id and reason".into(),
+            ));
+        }
+        if !memory_refs.insert(reference.reference_id.as_str()) {
+            return Err(KernelError::Validation(format!(
+                "FocusedContext memory reference appears in both selected and omitted sets: {}",
+                reference.reference_id
+            )));
+        }
+    }
+
+    if let Some(knowledge) = &snapshot.knowledge_context {
+        validate_knowledge_selection(knowledge)?;
+    }
+    Ok(())
+}
+
+fn validate_knowledge_selection(selection: &KnowledgeContextSelection) -> KernelResult<()> {
+    if selection.contract_version != super::knowledge::KNOWLEDGE_CONTEXT_CONTRACT_VERSION {
+        return Err(KernelError::Validation(format!(
+            "unsupported KnowledgeContext contract version: {}",
+            selection.contract_version
+        )));
+    }
+    if selection.retrieval_version.trim().is_empty() {
+        return Err(KernelError::Validation(
+            "KnowledgeContext retrieval version must not be empty".into(),
+        ));
+    }
+    if selection.estimated_tokens < 0 {
+        return Err(KernelError::Validation(
+            "KnowledgeContext estimated tokens must not be negative".into(),
+        ));
+    }
+
+    let mut references = HashSet::new();
+    let mut selected_tokens = 0_i64;
+    for reference in &selection.selected {
+        if reference.entity_id.trim().is_empty() || reference.estimated_tokens <= 0 {
+            return Err(KernelError::Validation(
+                "KnowledgeContext selected references require an id and positive token estimate"
+                    .into(),
+            ));
+        }
+        if !references.insert(reference.entity_id.as_str()) {
+            return Err(KernelError::Validation(format!(
+                "KnowledgeContext reference appears more than once: {}",
+                reference.entity_id
+            )));
+        }
+        selected_tokens = selected_tokens
+            .checked_add(reference.estimated_tokens)
+            .ok_or_else(|| {
+                KernelError::Validation("KnowledgeContext token estimate overflowed".into())
+            })?;
+    }
+    for omitted in &selection.omitted {
+        if omitted.reference_id.trim().is_empty() || omitted.reason.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "KnowledgeContext omitted references require an id and reason".into(),
+            ));
+        }
+        if !references.insert(omitted.reference_id.as_str()) {
+            return Err(KernelError::Validation(format!(
+                "KnowledgeContext reference appears in both selected and omitted sets: {}",
+                omitted.reference_id
+            )));
+        }
+    }
+    if selected_tokens != selection.estimated_tokens {
+        return Err(KernelError::Integrity(
+            "KnowledgeContext estimated tokens do not match selected references".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn compile_focused_context(
@@ -358,5 +497,76 @@ mod tests {
         assert_eq!(knowledge.estimated_tokens, 4);
         assert_eq!(knowledge.selected[0].entity_id, "entity-1");
         assert!(knowledge.omitted.is_empty());
+    }
+
+    #[test]
+    fn persisted_snapshot_validation_accepts_compiled_context_and_knowledge() {
+        let mut focus_frame = frame("focus-valid", FocusContextPolicy::FocusNew);
+        focus_frame.include_refs = vec!["entity-1".into()];
+        let snapshot = compile_focused_context(FocusedContextCompileInput {
+            context: context(),
+            focus_frame,
+            knowledge: Some(KnowledgeContextCompileInput {
+                candidates: vec![knowledge_candidate()],
+                retrieval_context: KnowledgeRetrievalContext {
+                    workspace_id: "workspace-1".into(),
+                    project_id: Some("project-1".into()),
+                    conversation_id: "conversation-1".into(),
+                    focus_frame_id: "focus-valid".into(),
+                },
+                retrieval_version: "fts-v1".into(),
+                max_tokens: Some(8),
+            }),
+        })
+        .expect("compile focused snapshot");
+
+        validate_focused_context_snapshot(&snapshot).expect("validate compiled snapshot");
+    }
+
+    #[test]
+    fn persisted_snapshot_validation_rejects_a_parent_node_mismatch() {
+        let snapshot = compile_focused_context(FocusedContextCompileInput {
+            context: context(),
+            focus_frame: frame("focus-parent", FocusContextPolicy::ContinueCurrent),
+            knowledge: None,
+        })
+        .expect("compile focused snapshot");
+        let mut invalid = snapshot;
+        invalid.context_snapshot.parent_node_id = Some("node-other".into());
+
+        let error = validate_focused_context_snapshot(&invalid)
+            .expect_err("reject a snapshot stitched to another parent");
+        assert!(error.to_string().contains("different parent node"));
+    }
+
+    #[test]
+    fn persisted_snapshot_validation_rejects_selected_knowledge_token_drift() {
+        let mut focus_frame = frame("focus-token-drift", FocusContextPolicy::FocusNew);
+        focus_frame.include_refs = vec!["entity-1".into()];
+        let mut snapshot = compile_focused_context(FocusedContextCompileInput {
+            context: context(),
+            focus_frame,
+            knowledge: Some(KnowledgeContextCompileInput {
+                candidates: vec![knowledge_candidate()],
+                retrieval_context: KnowledgeRetrievalContext {
+                    workspace_id: "workspace-1".into(),
+                    project_id: Some("project-1".into()),
+                    conversation_id: "conversation-1".into(),
+                    focus_frame_id: "focus-token-drift".into(),
+                },
+                retrieval_version: "fts-v1".into(),
+                max_tokens: Some(8),
+            }),
+        })
+        .expect("compile focused snapshot");
+        snapshot
+            .knowledge_context
+            .as_mut()
+            .expect("knowledge selection")
+            .estimated_tokens = 999;
+
+        let error = validate_focused_context_snapshot(&snapshot)
+            .expect_err("reject stale selected-token aggregate");
+        assert!(error.to_string().contains("estimated tokens do not match"));
     }
 }
