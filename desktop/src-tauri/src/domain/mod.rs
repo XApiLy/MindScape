@@ -3,6 +3,7 @@ mod context;
 mod conversation;
 mod credentials;
 mod error;
+mod focus_lifecycle;
 mod focused_context;
 mod imports;
 mod knowledge;
@@ -23,6 +24,11 @@ pub use conversation::{
 };
 pub use credentials::{CredentialError, CredentialRef, CredentialResult, SetCredentialInput};
 pub use error::{KernelError, KernelResult};
+pub use focus_lifecycle::{
+    FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleError,
+    FocusFrameLifecycleSnapshot, FocusFrameLifecycleStatus, close_focus_frame, reopen_focus_frame,
+    transition_focus_frame,
+};
 pub use focused_context::{
     FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,
     compile_focused_context,

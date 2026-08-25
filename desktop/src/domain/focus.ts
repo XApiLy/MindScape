@@ -32,6 +32,17 @@ export type FocusFrame = {
   createdAt: string;
 };
 
+export type FocusFrameLifecycleStatus = "active" | "closed";
+
+export type FocusFrameLifecycleSnapshot = {
+  contractVersion: "mindscape.focus-lifecycle.v1";
+  frame: FocusFrame;
+  status: FocusFrameLifecycleStatus;
+  revision: number;
+  updatedAt: string;
+  closedAt: string | null;
+};
+
 export type OmittedFocusRef = {
   referenceId: string;
   reason: string;

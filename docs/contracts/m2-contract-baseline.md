@@ -39,6 +39,8 @@
 4. 同一引用不能同时出现在两个记忆集合；目标不能为空，记忆版本必须大于 0。
 5. 输出包装 `FocusedContextSnapshot`，保留选中引用、排除引用、原因和原 V1 ContextSnapshot；不修改旧快照语义。
 
+`FocusFrameLifecycleSnapshot` 以独立加法契约记录 `active/closed`、revision、更新时间和关闭时间。纯领域入口 `close_focus_frame` / `reopen_focus_frame` 只允许 Active→Closed、Closed→Active，保持 FocusFrame 稳定 ID；持久化、切换查询和启动恢复由数据/命令层接入。
+
 ## 4. ARC-M2-003～004：知识与 Markdown 投影
 
 - 实体类型固定为 Goal、Decision、Constraint、Question、Source、Project、Topic。
@@ -90,4 +92,4 @@
 - FocusFrame 覆盖同父节点不同焦点、排除单条消息时整轮隔离、集合冲突拒绝。
 - 知识状态机覆盖确认、否决、取代、过期、revision 递增和禁止复活；分支规则覆盖任务分支污染阻断、显式继承和候选不冒充事实。
 - 知识上下文编译覆盖确认候选排序、预算排除、候选不注入、重复拒绝和 FocusedContextSnapshot 加法接线。
-- 尚未完成：运行档案不可变查询/重启投影与真实 Key 验收、FocusFrame/知识生命周期命令、SQLite 知识持久化、Markdown 修订、实际导入解析、全文/向量索引适配、关系扩展、删除失效和 M2 纵向验收。这些不得从本 Draft 推断为已交付。
+- 尚未完成：运行档案不可变查询/重启投影与真实 Key 验收、FocusFrame/知识生命周期命令接线、SQLite FocusFrame/知识持久化、Markdown 修订、实际导入解析、全文/向量索引适配、关系扩展、删除失效和 M2 纵向验收。这些不得从本 Draft 推断为已交付。
