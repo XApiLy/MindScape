@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     ContextCompileInput, ContextSnapshot, ContextTurn, KernelError, KernelResult,
     OmittedContextRef, compile_context,
-    contracts::{FOCUS_CONTRACT_VERSION, FocusContextPolicy, FocusFrame, OmittedFocusRef},
+    contracts::{FocusContextPolicy, FocusFrame, OmittedFocusRef},
     knowledge::{
         KnowledgeContextCompileInput, KnowledgeContextSelection, compile_knowledge_context,
     },
@@ -115,12 +115,7 @@ pub fn compile_focused_context(
 }
 
 fn validate_focus_frame(frame: &FocusFrame, context: &ContextCompileInput) -> KernelResult<()> {
-    if frame.contract_version != FOCUS_CONTRACT_VERSION {
-        return Err(KernelError::Validation(format!(
-            "unsupported FocusFrame contract version: {}",
-            frame.contract_version
-        )));
-    }
+    frame.validate()?;
     if frame.conversation_id != context.conversation_id {
         return Err(KernelError::Validation(
             "FocusFrame and context must belong to the same conversation".into(),
@@ -130,41 +125,6 @@ fn validate_focus_frame(frame: &FocusFrame, context: &ContextCompileInput) -> Ke
         return Err(KernelError::Validation(
             "FocusFrame and context must reference the same parent node".into(),
         ));
-    }
-    if frame.objective.trim().is_empty() {
-        return Err(KernelError::Validation(
-            "FocusFrame objective must not be empty".into(),
-        ));
-    }
-    if frame.memory_version == 0 {
-        return Err(KernelError::Validation(
-            "FocusFrame memory version must be greater than zero".into(),
-        ));
-    }
-
-    let groups = [
-        &frame.memory_scope.inherit_refs,
-        &frame.memory_scope.local_refs,
-        &frame.memory_scope.exclude_refs,
-        &frame.memory_scope.promote_refs,
-    ];
-    let mut unique = HashSet::new();
-    for reference in groups
-        .into_iter()
-        .flatten()
-        .chain(&frame.include_refs)
-        .chain(&frame.exclude_refs)
-    {
-        if reference.trim().is_empty() {
-            return Err(KernelError::Validation(
-                "FocusFrame memory references must not be empty".into(),
-            ));
-        }
-        if !unique.insert(reference) {
-            return Err(KernelError::Validation(format!(
-                "FocusFrame memory reference appears in more than one set: {reference}"
-            )));
-        }
     }
     Ok(())
 }
@@ -215,8 +175,8 @@ fn record_omitted_turn(turn: &ContextTurn, reason: &str, omitted: &mut Vec<Omitt
 mod tests {
     use super::*;
     use crate::domain::contracts::{
-        FocusBranchKind, FocusMemoryScope, GeneratorKind, GeneratorRef, KnowledgeEntity,
-        KnowledgeEntityKind, KnowledgeScope, KnowledgeStatus,
+        FOCUS_CONTRACT_VERSION, FocusBranchKind, FocusMemoryScope, GeneratorKind, GeneratorRef,
+        KnowledgeEntity, KnowledgeEntityKind, KnowledgeScope, KnowledgeStatus,
     };
     use crate::domain::{
         BranchType, ContentBlock, KnowledgeContextCompileInput, KnowledgeRetrievalCandidate,
