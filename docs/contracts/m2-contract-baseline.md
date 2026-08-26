@@ -92,6 +92,8 @@ KnowledgeEntity、KnowledgeRelation、ScopedEvidenceRef 和 EvidenceRef 在进�
 
 纯领域入口为 `compile_knowledge_context`，不读写 SQLite、全文/向量索引或 Provider；索引适配、关系扩展和持久化由员工02/05后续实现。
 
+`KnowledgeRetrievalProjection`（`mindscape.knowledge-retrieval.v1`）是 FTS、VectorIndex 与 Relation 适配器汇合后的只读候选边界：每个候选必须携带完整 `KnowledgeEntity`、EvidenceRef、估算 Token、整数检索分数和一个或多个来源（Vector / FullText / Relation）；投影同时携带 `retrievalVersion`、selected/omitted 引用和 `RetrievalNotice`。该投影仍不是事实确认结果，必须再经 FocusFrame 作用域、状态和预算编译；向量不可用时只能通过 notice 表达降级，不得伪装为语义检索完成。
+
 ## 9. 本切片验证与未完成项
 
 - Rust 契约序列化覆盖运行档案、知识作用域/状态/证据和禁生成式原样导入。

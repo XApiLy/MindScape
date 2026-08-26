@@ -8,6 +8,7 @@ mod focus_query;
 mod focused_context;
 mod imports;
 mod knowledge;
+mod knowledge_retrieval;
 
 pub mod contracts;
 
@@ -44,4 +45,9 @@ pub use knowledge::{
     KnowledgeRetrievalCandidate, KnowledgeRetrievalContext, KnowledgeRetrievalDecision,
     KnowledgeTransition, KnowledgeTransitionError, OmittedKnowledgeRef, compile_knowledge_context,
     retrieval_decision, transition_entity,
+};
+pub use knowledge_retrieval::{
+    KNOWLEDGE_RETRIEVAL_PROJECTION_CONTRACT_VERSION, KnowledgeEmbeddingProvenance,
+    KnowledgeRetrievalAvailability, KnowledgeRetrievalCandidateProjection,
+    KnowledgeRetrievalNotice, KnowledgeRetrievalProjection, KnowledgeRetrievalSource,
 };

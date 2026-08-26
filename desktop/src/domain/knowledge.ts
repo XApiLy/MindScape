@@ -95,6 +95,40 @@ export type KnowledgeContextSelection = {
   estimatedTokens: number;
 };
 
+export type KnowledgeRetrievalSource = "vector" | "fullText" | "relation";
+
+export type KnowledgeRetrievalAvailability = "available" | "unavailable";
+
+export type KnowledgeRetrievalNotice = {
+  vectorStatus: KnowledgeRetrievalAvailability;
+  usedFallback: boolean;
+  safeMessage: string | null;
+};
+
+export type KnowledgeEmbeddingProvenance = {
+  modelVersion: string;
+  dimensions: number;
+  sourceHash: string;
+  chunkVersion: string;
+};
+
+export type KnowledgeRetrievalCandidateProjection = {
+  entity: KnowledgeEntity;
+  evidence: EvidenceRef[];
+  retrievalScore: number;
+  estimatedTokens: number;
+  sources: KnowledgeRetrievalSource[];
+  embedding: KnowledgeEmbeddingProvenance | null;
+};
+
+export type KnowledgeRetrievalProjection = {
+  contractVersion: "mindscape.knowledge-retrieval.v1";
+  retrievalVersion: string;
+  candidates: KnowledgeRetrievalCandidateProjection[];
+  omitted: OmittedKnowledgeRef[];
+  notice: KnowledgeRetrievalNotice;
+};
+
 export type KnowledgeRelationKind =
   | "mentions"
   | "belongsTo"
