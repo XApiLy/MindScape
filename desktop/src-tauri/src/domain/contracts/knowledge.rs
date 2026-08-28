@@ -436,3 +436,196 @@ pub struct MarkdownProjection {
     pub frontmatter_version: String,
     pub created_at: String,
 }
+
+impl MarkdownProjection {
+    pub fn validate(&self) -> KernelResult<()> {
+        if self.contract_version != MARKDOWN_PROJECTION_CONTRACT_VERSION {
+            return Err(KernelError::Validation(format!(
+                "unsupported MarkdownProjection contract version: {}",
+                self.contract_version
+            )));
+        }
+        require_non_empty(&self.id, "MarkdownProjection id")?;
+        require_non_empty(
+            &self.target_entity_id,
+            "MarkdownProjection target entity id",
+        )?;
+        validate_markdown_relative_path(&self.relative_path)?;
+        if self.entity_revision == 0 || self.projection_revision == 0 {
+            return Err(KernelError::Validation(
+                "MarkdownProjection revisions must be greater than zero".into(),
+            ));
+        }
+        require_non_empty(&self.content_hash, "MarkdownProjection content hash")?;
+        require_non_empty(
+            &self.frontmatter_version,
+            "MarkdownProjection frontmatter version",
+        )?;
+        require_non_empty(&self.created_at, "MarkdownProjection created at")
+    }
+
+    pub fn next_revision(
+        &self,
+        relative_path: String,
+        entity_revision: u64,
+        content_hash: String,
+        frontmatter_version: String,
+        created_at: String,
+    ) -> KernelResult<Self> {
+        self.validate()?;
+        if entity_revision < self.entity_revision {
+            return Err(KernelError::Integrity(
+                "MarkdownProjection entity revision cannot move backwards".into(),
+            ));
+        }
+        let projection_revision = self.projection_revision.checked_add(1).ok_or_else(|| {
+            KernelError::Integrity("MarkdownProjection revision overflowed".into())
+        })?;
+        let next = Self {
+            contract_version: MARKDOWN_PROJECTION_CONTRACT_VERSION.into(),
+            id: self.id.clone(),
+            target_entity_id: self.target_entity_id.clone(),
+            relative_path,
+            entity_revision,
+            projection_revision,
+            content_hash,
+            frontmatter_version,
+            created_at,
+        };
+        next.validate()?;
+        Ok(next)
+    }
+}
+
+fn validate_markdown_relative_path(relative_path: &str) -> KernelResult<()> {
+    require_non_empty(relative_path, "MarkdownProjection relative path")?;
+    let path = relative_path.trim();
+    let mut segments = path.split('/');
+    let is_markdown = segments
+        .clone()
+        .next_back()
+        .is_some_and(|segment| segment.to_ascii_lowercase().ends_with(".md"));
+    let has_unsafe_segment = segments.any(|segment| {
+        segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.contains('\0')
+            || segment.contains('\\')
+            || segment.contains(':')
+    });
+    if path != relative_path || path.starts_with('/') || has_unsafe_segment || !is_markdown {
+        return Err(KernelError::Validation(
+            "MarkdownProjection path must be a safe relative .md path".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod markdown_projection_tests {
+    use super::*;
+
+    fn projection() -> MarkdownProjection {
+        MarkdownProjection {
+            contract_version: MARKDOWN_PROJECTION_CONTRACT_VERSION.into(),
+            id: "projection-1".into(),
+            target_entity_id: "entity-1".into(),
+            relative_path: "entities/decision-1.md".into(),
+            entity_revision: 2,
+            projection_revision: 1,
+            content_hash: "sha256:current".into(),
+            frontmatter_version: "mindscape.frontmatter.v1".into(),
+            created_at: "2026-08-27T06:50:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn validates_safe_markdown_projection() {
+        assert!(projection().validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_parent_path_escape() {
+        let mut invalid = projection();
+        invalid.relative_path = "../outside.md".into();
+
+        let error = invalid.validate().expect_err("parent path escape");
+
+        assert!(error.to_string().contains("safe relative .md path"));
+    }
+
+    #[test]
+    fn rejects_non_markdown_projection_path() {
+        let mut invalid = projection();
+        invalid.relative_path = "entities/decision-1.txt".into();
+
+        let error = invalid.validate().expect_err("non-Markdown path");
+
+        assert!(error.to_string().contains("safe relative .md path"));
+    }
+
+    #[test]
+    fn rejects_unknown_markdown_projection_contract() {
+        let mut invalid = projection();
+        invalid.contract_version = "mindscape.markdown-projection.v0".into();
+
+        let error = invalid.validate().expect_err("unknown contract");
+
+        assert!(error.to_string().contains("unsupported MarkdownProjection"));
+    }
+
+    #[test]
+    fn next_revision_preserves_identity_and_increments_projection_revision() {
+        let next = projection()
+            .next_revision(
+                "decisions/renamed.md".into(),
+                3,
+                "sha256:next".into(),
+                "mindscape.frontmatter.v1".into(),
+                "2026-08-27T06:55:00Z".into(),
+            )
+            .expect("valid revision");
+
+        assert_eq!(
+            (
+                next.id.as_str(),
+                next.target_entity_id.as_str(),
+                next.projection_revision
+            ),
+            ("projection-1", "entity-1", 2)
+        );
+    }
+
+    #[test]
+    fn next_revision_rejects_entity_revision_regression() {
+        let error = projection()
+            .next_revision(
+                "entities/decision-1.md".into(),
+                1,
+                "sha256:older".into(),
+                "mindscape.frontmatter.v1".into(),
+                "2026-08-27T06:55:00Z".into(),
+            )
+            .expect_err("entity revision regression");
+
+        assert!(error.to_string().contains("cannot move backwards"));
+    }
+
+    #[test]
+    fn next_revision_rejects_projection_revision_overflow() {
+        let mut current = projection();
+        current.projection_revision = u64::MAX;
+
+        let error = current
+            .next_revision(
+                "entities/decision-1.md".into(),
+                2,
+                "sha256:next".into(),
+                "mindscape.frontmatter.v1".into(),
+                "2026-08-27T06:55:00Z".into(),
+            )
+            .expect_err("projection revision overflow");
+
+        assert!(error.to_string().contains("revision overflowed"));
+    }
+}

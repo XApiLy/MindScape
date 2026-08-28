@@ -52,6 +52,7 @@
 - `KnowledgeScope` 明确 workspace、project、conversation 或 FocusFrame；禁止用画布位置推断作用域。
 - 实体、关系和作用域证据均包含稳定 ID、修订、状态、生成器和 EvidenceRef。
 - `MarkdownProjection` 只记录实体 ID、相对路径、实体/投影修订和内容哈希；改名不能改变实体身份，Markdown 不能成为事件账本。
+- `MarkdownProjection::validate()` 在进入 SQLite 或文件适配器前拒绝未知契约、空身份、零修订和绝对/父级逃逸/非 Markdown 路径；`next_revision()` 保持投影与实体身份、只递增投影修订，并禁止实体修订倒退。用户改名或编辑必须形成新投影修订，不能覆盖旧版本。
 
 ## 5. ARC-M2-005 / IMP-M2-001～003：通用导入语义
 
@@ -100,4 +101,5 @@ KnowledgeEntity、KnowledgeRelation、ScopedEvidenceRef 和 EvidenceRef 在进�
 - FocusFrame 覆盖同父节点不同焦点、排除单条消息时整轮隔离、集合冲突拒绝。
 - 知识状态机覆盖确认、否决、取代、过期、revision 递增和禁止复活；分支规则覆盖任务分支污染阻断、显式继承和候选不冒充事实。
 - 知识上下文编译覆盖确认候选排序、预算排除、候选不注入、重复拒绝和 FocusedContextSnapshot 加法接线。
-- 尚未完成：运行档案不可变查询/重启投影与真实 Key 验收、FocusFrame/知识生命周期命令接线、SQLite FocusFrame/知识持久化、Markdown 修订、实际导入解析、全文/向量索引适配、关系扩展、删除失效和 M2 纵向验收。这些不得从本 Draft 推断为已交付。
+- Markdown 投影覆盖安全相对路径、稳定身份、投影 revision 递增、实体 revision 防倒退和溢出拒绝；SQLite 修订历史与实际 Vault 文件写入仍由数据层接入。
+- 当前共享工作树已出现 FocusFrame/知识生命周期、SQLite 持久化、通用导入解析、全文/向量/关系检索和删除失效实现，但仍需在代码评审、统一提交和同一 Tauri Release 中验收；Markdown/Vault 修订历史、运行档案重启投影、真实跨模块样本和 M2 纵向验收仍未关闭。不得从局部类型、单元测试或未提交工作树推断为已发布。
