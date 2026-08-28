@@ -9,7 +9,7 @@ pub use events::{AggregateType, DomainEventEnvelope, DomainEventType, EVENT_CONT
 pub use evidence::{EVIDENCE_CONTRACT_VERSION, EvidenceRef, EvidenceTarget};
 pub use focus::{
     FOCUS_CONTRACT_VERSION, FocusBranchKind, FocusContextPolicy, FocusFrame, FocusMemoryScope,
-    OmittedFocusRef,
+    FocusPromotionCandidateSet, OmittedFocusRef,
 };
 pub use imports::{
     AnalysisMode, ContinuationClaim, ContinuationStatus, DerivedContinuation, FieldRecovery,
