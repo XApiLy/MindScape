@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{KernelError, KernelResult, contracts::FocusFrame};
+use super::{
+    KernelError, KernelResult,
+    contracts::{FocusBranchKind, FocusFrame, FocusPromotionCandidateSet},
+};
 
 pub const FOCUS_LIFECYCLE_CONTRACT_VERSION: &str = "mindscape.focus-lifecycle.v1";
 
@@ -60,6 +63,25 @@ impl FocusFrameLifecycleSnapshot {
                 "closed FocusFrame lifecycle requires a non-empty closedAt".into(),
             )),
         }
+    }
+
+    /// Returns formal promotion candidates only after a non-mainline branch
+    /// has closed. Active frames retain their promotion declarations but do
+    /// not expose them as results that a user can confirm.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation or integrity error when the lifecycle snapshot or
+    /// its embedded FocusFrame violates the frozen contracts.
+    pub fn promotion_candidates(&self) -> KernelResult<Option<FocusPromotionCandidateSet>> {
+        self.validate()?;
+        if self.status == FocusFrameLifecycleStatus::Active
+            || self.frame.memory_scope.branch_kind == FocusBranchKind::Mainline
+            || self.frame.memory_scope.promote_refs.is_empty()
+        {
+            return Ok(None);
+        }
+        self.frame.promotion_candidates().map(Some)
     }
 }
 
@@ -275,6 +297,42 @@ mod tests {
             error
                 .to_string()
                 .contains("unsupported FocusFrame lifecycle")
+        );
+    }
+
+    #[test]
+    fn active_branch_does_not_expose_formal_promotion_candidates() {
+        let mut active = snapshot(FocusFrameLifecycleStatus::Active);
+        active.frame.memory_scope.promote_refs = vec!["entity-result-1".into()];
+
+        let candidates = active.promotion_candidates().expect("valid active branch");
+
+        assert_eq!(candidates, None);
+    }
+
+    #[test]
+    fn closed_branch_exposes_versioned_promotion_candidates() {
+        let mut active = snapshot(FocusFrameLifecycleStatus::Active);
+        active.frame.memory_version = 4;
+        active.frame.memory_scope.promote_refs = vec!["entity-result-1".into()];
+        let closed = close_focus_frame(&active, "2026-08-25T01:00:00Z")
+            .expect("close branch before promotion");
+
+        let candidates = closed
+            .promotion_candidates()
+            .expect("valid closed branch")
+            .expect("formal promotion candidates");
+
+        assert_eq!(
+            candidates,
+            FocusPromotionCandidateSet {
+                contract_version: crate::domain::contracts::FOCUS_CONTRACT_VERSION.into(),
+                focus_frame_id: "focus-1".into(),
+                conversation_id: "conversation-1".into(),
+                branch_kind: FocusBranchKind::Task,
+                memory_version: 4,
+                candidate_refs: vec!["entity-result-1".into()],
+            }
         );
     }
 }

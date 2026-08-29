@@ -31,7 +31,7 @@
 - `excludeRefs`：禁止进入当前上下文。
 - `promoteRefs`：分支结束后可提交确认的回流候选。
 
-`FocusFrame::promotion_candidates()` 只为任务、探索和复盘分支生成不可变候选集合，冻结来源 FocusFrame、会话、分支类型和 memory version；主线不得声明或生成回流候选，空候选集合显式失败。该集合不是确认命令，也不会直接修改主线或项目知识；员工03/04只能展示候选，用户确认后才允许由知识状态机创建新版本实体和关系。
+`FocusFrame::promotion_candidates()` 只为任务、探索和复盘分支构造不可变候选集合，冻结来源 FocusFrame、会话、分支类型和 memory version；`FocusFrameLifecycleSnapshot::promotion_candidates()` 是正式查询门禁，仅 Closed 分支可返回集合，Active、主线或空声明统一返回 `null`。重新打开分支后正式候选再次隐藏。该集合不是确认命令，也不会直接修改主线或项目知识；员工03/04只能展示候选，用户确认后才允许由知识状态机创建新版本实体和关系。
 
 上下文策略固定为：继续当前问题、聚焦新问题、从节点分支、原样续接。`compile_focused_context` 的第一版规则为：
 
