@@ -4,6 +4,7 @@ mod conversation;
 mod credentials;
 mod error;
 mod focus_lifecycle;
+mod focus_promotion;
 mod focus_query;
 mod focused_context;
 mod imports;
@@ -30,6 +31,12 @@ pub use focus_lifecycle::{
     FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleCommandInput,
     FocusFrameLifecycleError, FocusFrameLifecycleSnapshot, FocusFrameLifecycleStatus,
     close_focus_frame, reopen_focus_frame, transition_focus_frame,
+};
+pub use focus_promotion::{
+    FOCUS_PROMOTION_DECISION_CONTRACT_VERSION, FocusPromotionDecisionAction,
+    FocusPromotionDecisionCommandInput, FocusPromotionDecisionError, FocusPromotionDecisionPlan,
+    FocusPromotionDecisionProjection, FocusPromotionEntityMutation, FocusPromotionTargetScope,
+    plan_focus_promotion_decision,
 };
 pub use focus_query::{
     FOCUS_QUERY_CONTRACT_VERSION, FocusFrameQueryProjection, validate_focus_frame_query_projection,
