@@ -73,6 +73,7 @@ export type ModelRunRequest = {
   modelId: string;
   capabilities: CapabilityRequirement[];
   budget: ModelRunBudget;
+  effectiveRunProfile?: EffectiveRunProfile | null;
   idempotencyKey: string;
   createdAt: string;
 };

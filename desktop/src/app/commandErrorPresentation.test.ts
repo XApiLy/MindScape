@@ -22,6 +22,17 @@ test("routes preflight authentication errors back to safe settings actions", () 
   assert.match(message, /测试连接/);
 });
 
+test("turns provider invalid requests into executable run-profile guidance", () => {
+  const message = commandErrorMessage({
+    code: "providerInvalidRequest",
+    safeMessage: "temperature cannot be combined with thinking mode.",
+    retryable: false,
+  });
+  assert.match(message, /运行参数/);
+  assert.match(message, /reasoning/);
+  assert.doesNotMatch(message, /temperature cannot/);
+});
+
 test("preserves unknown safe command messages", () => {
   assert.equal(
     commandErrorMessage({ code: "futureCode", safeMessage: "Future safe message" }),

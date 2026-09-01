@@ -159,6 +159,15 @@ pub struct ImportedMessage {
     pub platform_extension: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportBundleQueryProjection {
+    pub source: ImportSource,
+    pub revision: ImportRevision,
+    pub messages: Vec<ImportedMessage>,
+    pub report: ParseReport,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AnalysisMode {

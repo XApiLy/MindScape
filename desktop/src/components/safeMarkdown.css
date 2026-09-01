@@ -1,0 +1,242 @@
+.markdown-reading-surface {
+  color: #ceccc8;
+  max-inline-size: var(--reading-max-width, 72ch);
+  font-family: var(--reading-font-family, ui-sans-serif, system-ui, sans-serif);
+  font-synthesis: var(--reading-font-synthesis, weight style);
+  font-size: var(--reading-font-size, 13px);
+  line-height: var(--reading-line-height, 1.78);
+  letter-spacing: var(--reading-letter-spacing, 0em);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+/*
+  Chat answer surfaces previously inherited `white-space: pre-wrap` from the
+  generic answer shell. Keep Markdown source newlines from becoming visual
+  spacer rows even if a host adds its own whitespace rule later.
+*/
+.answer-text.markdown-reading-surface {
+  white-space: normal;
+}
+
+.markdown-reading-surface > :first-child {
+  margin-top: 0;
+}
+
+.markdown-reading-surface > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-reading-surface h1,
+.markdown-reading-surface h2,
+.markdown-reading-surface h3,
+.markdown-reading-surface h4,
+.markdown-reading-surface h5,
+.markdown-reading-surface h6 {
+  margin: calc(var(--reading-paragraph-spacing, 13px) * 1.35) 0
+    calc(var(--reading-paragraph-spacing, 13px) * 0.55);
+  color: #f0eee9;
+  line-height: 1.28;
+}
+
+.markdown-reading-surface h1 { font-size: 1.65em; }
+.markdown-reading-surface h2 { font-size: 1.4em; }
+.markdown-reading-surface h3 { font-size: 1.18em; }
+.markdown-reading-surface h4,
+.markdown-reading-surface h5,
+.markdown-reading-surface h6 { font-size: 1em; }
+
+/*
+  Regular-only preset faces must not synthesize bold/italic. Keep Markdown
+  emphasis perceptible through the existing reading palette instead.
+*/
+.app-shell:is(
+  [data-reading-font="chill-round-m"],
+  [data-reading-font="xiaolai-sc"],
+  [data-reading-font="smiley-sans"]
+) .markdown-reading-surface strong {
+  color: #f0d9ad;
+  font-weight: 400;
+}
+
+.app-shell:is(
+  [data-reading-font="chill-round-m"],
+  [data-reading-font="xiaolai-sc"],
+  [data-reading-font="smiley-sans"]
+) .markdown-reading-surface em {
+  color: #dfc38e;
+  font-style: normal;
+}
+
+.markdown-reading-surface p,
+.markdown-reading-surface ul,
+.markdown-reading-surface ol,
+.markdown-reading-surface blockquote,
+.markdown-reading-surface .markdown-code-block,
+.markdown-reading-surface .markdown-table-scroll {
+  margin: 0 0 var(--reading-paragraph-spacing, 13px);
+}
+
+.markdown-reading-surface ul,
+.markdown-reading-surface ol {
+  padding-left: 1.55em;
+}
+
+.markdown-reading-surface li + li {
+  margin-top: calc(var(--reading-paragraph-spacing, 13px) * 0.25);
+}
+
+.markdown-reading-surface input[type="checkbox"] {
+  margin-right: 0.55em;
+  accent-color: var(--accent);
+}
+
+.markdown-reading-surface blockquote {
+  padding: 0.1em 0 0.1em 1em;
+  color: #aaa8a3;
+  border-left: 3px solid rgba(203, 168, 106, 0.45);
+}
+
+.markdown-reading-surface hr {
+  margin: calc(var(--reading-paragraph-spacing, 13px) * 1.1) 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.markdown-reading-surface a {
+  color: #d3b47c;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.markdown-reading-surface a:focus-visible,
+.markdown-code-toolbar button:focus-visible,
+.markdown-table-scroll:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.markdown-disabled-link {
+  color: #b9837d;
+  text-decoration: line-through;
+}
+
+.markdown-reading-surface :not(pre) > code {
+  padding: 0.12em 0.38em;
+  color: #e5d2ad;
+  background: rgba(203, 168, 106, 0.09);
+  border: 1px solid rgba(203, 168, 106, 0.13);
+  border-radius: 5px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-code-block {
+  overflow: hidden;
+  background: #0a0a0c;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.markdown-code-toolbar {
+  display: flex;
+  padding: 6px 9px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid var(--line);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 9px;
+}
+
+.markdown-code-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.markdown-code-toolbar svg {
+  width: 12px;
+  height: 12px;
+}
+
+.markdown-code-block pre,
+.markdown-code-block code {
+  margin: 0;
+  color: #d7d5d1;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+.markdown-code-block pre {
+  padding: 13px 15px;
+  overflow-x: auto;
+  line-height: 1.65;
+}
+
+.markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.markdown-table-scroll table {
+  width: 100%;
+  min-width: 440px;
+  border-collapse: collapse;
+}
+
+.markdown-table-scroll th,
+.markdown-table-scroll td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-table-scroll th {
+  color: #e5dfd4;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.markdown-table-scroll tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-table-scroll th:last-child,
+.markdown-table-scroll td:last-child {
+  border-right: 0;
+}
+
+.markdown-image-placeholder {
+  display: inline-flex;
+  padding: 6px 8px;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: var(--panel-inset);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 0.88em;
+}
+
+.markdown-image-placeholder svg {
+  width: 13px;
+  height: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .markdown-reading-surface.is-streaming {
+    scroll-behavior: auto;
+  }
+}

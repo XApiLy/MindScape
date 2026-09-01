@@ -1,6 +1,7 @@
 import type { BranchType } from "../domain/common.ts";
 import {
   APPLICATION_INTERRUPTED_PROVIDER_CODE,
+  type EffectiveRunProfile,
   type ModelRunEventEnvelope,
   type ModelRunProjection,
   type ModelUsage,
@@ -31,6 +32,7 @@ export type ChatRunState = {
   protocolWarning: string | null;
   cancelRequested: boolean;
   cancelErrorMessage: string | null;
+  effectiveRunProfile?: EffectiveRunProfile;
 };
 
 export type ProviderErrorPresentation = {
@@ -48,6 +50,7 @@ export function createChatRunState(input: {
   prompt: string;
   parentNodeId: string | null;
   branchType: BranchType;
+  effectiveRunProfile?: EffectiveRunProfile;
 }): ChatRunState {
   return {
     id: input.runId,
@@ -68,6 +71,7 @@ export function createChatRunState(input: {
     protocolWarning: null,
     cancelRequested: false,
     cancelErrorMessage: null,
+    ...(input.effectiveRunProfile ? { effectiveRunProfile: input.effectiveRunProfile } : {}),
   };
 }
 

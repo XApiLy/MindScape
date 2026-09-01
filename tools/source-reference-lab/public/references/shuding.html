@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shuding Liquid Glass — Original Script</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { min-height: 100%; margin: 0; }
+      body {
+        overflow: hidden;
+        color: #eef7f1;
+        font-family: "Segoe UI Variable", sans-serif;
+        background:
+          radial-gradient(circle at 78% 20%, rgba(242,174,106,.95) 0 3%, transparent 28%),
+          radial-gradient(circle at 17% 80%, rgba(47,124,116,.9) 0 8%, transparent 34%),
+          linear-gradient(135deg, #06151c 0%, #164b53 44%, #c2634e 100%);
+      }
+      .scene { position: absolute; inset: 0; overflow: hidden; }
+      .grid { position: absolute; inset: 0; opacity: .32; background-image: linear-gradient(rgba(255,255,255,.24) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.24) 1px, transparent 1px); background-size: 48px 48px; transform: perspective(600px) rotateX(54deg) scale(1.5); transform-origin: 50% 100%; }
+      .word { position: absolute; left: 50%; top: 49%; transform: translate(-50%, -50%); color: rgba(255,255,255,.9); font: 700 clamp(50px, 12vw, 150px)/.8 "Arial Narrow", sans-serif; letter-spacing: -.06em; white-space: nowrap; }
+      .axis { position: absolute; background: rgba(255,255,255,.74); }
+      .axis.x { left: 0; right: 0; top: 50%; height: 1px; }
+      .axis.y { top: 0; bottom: 0; left: 50%; width: 1px; }
+      .label { position: absolute; left: 18px; top: 18px; max-width: 230px; padding: 9px 11px; border: 1px solid rgba(255,255,255,.32); background: rgba(4,15,18,.58); color: rgba(255,255,255,.78); font-size: 11px; line-height: 1.5; }
+      .label strong { display: block; color: #fff; }
+      .hint { position: absolute; right: 18px; bottom: 18px; color: rgba(255,255,255,.76); font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <div class="scene" aria-hidden="true">
+      <div class="grid"></div>
+      <div class="word">REFRACT</div>
+      <div class="axis x"></div>
+      <div class="axis y"></div>
+    </div>
+    <div class="label"><strong>shuding / liquid-glass.js</strong>测试场景只负责显露折射；液态透镜脚本保持原样。</div>
+    <div class="hint">拖动中央 300 × 200 透镜观察边缘位移</div>
+    <script src="/vendor/shuding/liquid-glass.js"></script>
+  </body>
+</html>

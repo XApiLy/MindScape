@@ -7,6 +7,49 @@ use crate::domain::contracts::{
     CapabilityRequirement, ModelRunEventEnvelope, ModelRunRequest, ProviderError,
 };
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningControl {
+    None,
+    Effort,
+    TokenBudget,
+    VendorSpecific,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderReasoningMode {
+    Disabled,
+    High,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ParameterSupport {
+    Unsupported,
+    Supported,
+    NonReasoningOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationParameterCapabilities {
+    pub max_output_tokens: ParameterSupport,
+    pub temperature: ParameterSupport,
+    pub top_p: ParameterSupport,
+    pub seed: ParameterSupport,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InputModality {
+    Text,
+    Image,
+    File,
+    Audio,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCapabilities {
@@ -16,6 +59,12 @@ pub struct ModelCapabilities {
     pub usage_reporting: bool,
     pub streaming: bool,
     pub context_window_tokens: Option<u64>,
+    pub supports_reasoning: bool,
+    pub reasoning_control: ReasoningControl,
+    pub reasoning_modes: Vec<ProviderReasoningMode>,
+    pub structured_output: bool,
+    pub generation_parameters: GenerationParameterCapabilities,
+    pub input_modalities: Vec<InputModality>,
 }
 
 impl ModelCapabilities {

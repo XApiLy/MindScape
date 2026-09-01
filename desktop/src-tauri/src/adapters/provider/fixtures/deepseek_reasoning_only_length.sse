@@ -1,0 +1,7 @@
+data: {"choices":[{"delta":{"reasoning_content":"内部推理，不得进入可见正文"},"finish_reason":null}],"usage":null}
+
+data: {"choices":[],"usage":{"prompt_tokens":19,"completion_tokens":256,"prompt_cache_hit_tokens":3}}
+
+data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":null}
+
+data: [DONE]

@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde::Serialize;
@@ -8,7 +11,9 @@ use tauri::{State, ipc::Channel};
 
 use crate::{
     adapters::{
-        CredentialService,
+        CredentialService, ImportStorage, MarkdownVault, SemanticEmbedding,
+        SemanticModelInstallError, SemanticModelPack, SemanticModelPackStatus,
+        parse_generic_import,
         provider::{
             MockProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
             ProviderConnectionTestResult, ProviderDescriptor, ProviderRegistry, ProviderRuntime,
@@ -19,26 +24,41 @@ use crate::{
     domain::{
         AppendTurnInput, CanvasViewportState, CompleteTurnInput, ContextSnapshot, Conversation,
         ConversationGraph, ConversationNode, CreateConversationInput, CredentialError,
-        CredentialRef, KernelBootstrap, KernelError, RunState, SaveCanvasViewportInput,
-        SetCredentialInput, StartModelRunInput, UpdateNodePositionInput,
+        CredentialRef, FocusFrameLifecycleCommandInput, FocusFrameLifecycleSnapshot,
+        FocusFrameQueryProjection, FocusPromotionDecisionCommandInput,
+        FocusPromotionDecisionProjection, FocusedContextSnapshot, KernelBootstrap, KernelError,
+        RunState, SaveCanvasViewportInput, SetCredentialInput, StartModelRunInput,
+        UpdateNodePositionInput,
         contracts::{
-            ModelRunEvent, ModelRunEventEnvelope, ModelRunProjection, ModelRunRequest,
-            ProviderError, ProviderErrorCategory,
+            DiscussionLog, DiscussionLogProjection, FocusFrame, FocusPromotionCandidateSet,
+            ImportRevision, ImportSource, ImportedMessage, ModelRunEvent, ModelRunEventEnvelope,
+            ModelRunProjection, ModelRunRequest, ParseReport, ProviderError, ProviderErrorCategory,
         },
         new_id, now_timestamp,
     },
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KernelState {
     service: KernelService,
+    import_storage: ImportStorage,
+    markdown_vault: MarkdownVault,
     credentials: CredentialService,
     provider_runtime: ProviderRuntime,
     active_runs: Arc<Mutex<HashMap<String, RunCancellation>>>,
+    semantic_model_pack: SemanticModelPack,
+    semantic_model_installing: Arc<AtomicBool>,
+    semantic_embedding: Arc<Mutex<Option<Arc<SemanticEmbedding>>>>,
 }
 
 impl KernelState {
-    pub fn new(service: KernelService, credentials: CredentialService) -> Self {
+    pub fn new(
+        service: KernelService,
+        credentials: CredentialService,
+        import_storage: ImportStorage,
+        markdown_vault: MarkdownVault,
+        semantic_model_pack: SemanticModelPack,
+    ) -> Self {
         let mut registry = ProviderRegistry::default();
         registry
             .register(MockProvider::standard())
@@ -54,11 +74,224 @@ impl KernelState {
             .expect("the built-in DeepSeek provider must register once");
         Self {
             service,
+            import_storage,
+            markdown_vault,
             credentials,
             provider_runtime: ProviderRuntime::new(registry),
             active_runs: Arc::new(Mutex::new(HashMap::new())),
+            semantic_model_pack,
+            semantic_model_installing: Arc::new(AtomicBool::new(false)),
+            semantic_embedding: Arc::new(Mutex::new(None)),
         }
     }
+
+    fn semantic_embedding(&self) -> Option<Arc<SemanticEmbedding>> {
+        let mut cached = self.semantic_embedding.lock().ok()?;
+        if cached.is_none() {
+            *cached = SemanticEmbedding::load(&self.semantic_model_pack)
+                .ok()
+                .map(Arc::new);
+        }
+        cached.clone()
+    }
+}
+
+struct InstallFlagGuard(Arc<AtomicBool>);
+
+impl Drop for InstallFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+#[tauri::command]
+pub fn get_semantic_model_pack_status(state: State<'_, KernelState>) -> SemanticModelPackStatus {
+    state.semantic_model_pack.inspect()
+}
+
+#[tauri::command]
+pub async fn install_semantic_model_pack(
+    state: State<'_, KernelState>,
+) -> CommandResult<SemanticModelPackStatus> {
+    if state
+        .semantic_model_installing
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(CommandError {
+            code: "semanticModelInstallInProgress",
+            safe_message: "The semantic model pack is already being installed.".into(),
+            retryable: true,
+        });
+    }
+    let _guard = InstallFlagGuard(Arc::clone(&state.semantic_model_installing));
+    let status = state
+        .semantic_model_pack
+        .install()
+        .await
+        .map_err(semantic_model_install_error)?;
+    if let Ok(mut cached) = state.semantic_embedding.lock() {
+        *cached = None;
+    }
+    Ok(status)
+}
+
+fn semantic_model_install_error(error: SemanticModelInstallError) -> CommandError {
+    match error {
+        SemanticModelInstallError::Download(_)
+        | SemanticModelInstallError::AllSourcesUnavailable(_) => CommandError {
+            code: "semanticModelDownloadFailed",
+            safe_message:
+                "The semantic model pack could not be downloaded. Check the network and retry."
+                    .into(),
+            retryable: true,
+        },
+        SemanticModelInstallError::Storage(_) => CommandError {
+            code: "semanticModelStorageFailed",
+            safe_message: "The semantic model pack could not be written to local storage.".into(),
+            retryable: true,
+        },
+        SemanticModelInstallError::SizeLimit(_)
+        | SemanticModelInstallError::Integrity
+        | SemanticModelInstallError::Archive(_)
+        | SemanticModelInstallError::InstallerTask(_) => CommandError {
+            code: "semanticModelIntegrityFailed",
+            safe_message: "The downloaded semantic model pack failed integrity verification."
+                .into(),
+            retryable: true,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn project_knowledge_entity_markdown(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    entity_id: String,
+) -> CommandResult<crate::domain::contracts::MarkdownProjection> {
+    state
+        .service
+        .project_knowledge_entity_markdown(&state.markdown_vault, &conversation_id, &entity_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_markdown_projections(
+    state: State<'_, KernelState>,
+    entity_id: String,
+) -> CommandResult<Vec<crate::domain::contracts::MarkdownProjection>> {
+    state
+        .service
+        .list_markdown_projections(&entity_id)
+        .map_err(Into::into)
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkdownEditCommandResult {
+    pub projection: crate::domain::contracts::MarkdownProjection,
+    pub changed: bool,
+}
+
+#[tauri::command]
+pub fn import_markdown_entity_edit(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    entity_id: String,
+) -> CommandResult<MarkdownEditCommandResult> {
+    let (projection, changed) = state.service.import_markdown_entity_edit(
+        &state.markdown_vault,
+        &conversation_id,
+        &entity_id,
+    )?;
+    Ok(MarkdownEditCommandResult {
+        projection,
+        changed,
+    })
+}
+
+#[tauri::command]
+pub fn project_discussion_log_markdown(
+    state: State<'_, KernelState>,
+    log: DiscussionLog,
+) -> CommandResult<DiscussionLogProjection> {
+    state
+        .service
+        .project_discussion_log_markdown(&state.markdown_vault, log)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_discussion_log(
+    state: State<'_, KernelState>,
+    discussion_log_id: String,
+) -> CommandResult<DiscussionLogProjection> {
+    state
+        .service
+        .get_discussion_log(&discussion_log_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_conversation_discussion_logs(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<Vec<DiscussionLogProjection>> {
+    state
+        .service
+        .list_conversation_discussion_logs(&conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_project_discussion_logs(
+    state: State<'_, KernelState>,
+    project_id: String,
+) -> CommandResult<Vec<DiscussionLogProjection>> {
+    state
+        .service
+        .list_project_discussion_logs(&project_id)
+        .map_err(Into::into)
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscussionLogEditCommandResult {
+    pub projection: DiscussionLogProjection,
+    pub changed: bool,
+}
+
+#[tauri::command]
+pub fn import_discussion_log_edit(
+    state: State<'_, KernelState>,
+    discussion_log_id: String,
+) -> CommandResult<DiscussionLogEditCommandResult> {
+    let (projection, changed) = state
+        .service
+        .import_discussion_log_edit(&state.markdown_vault, &discussion_log_id)?;
+    Ok(DiscussionLogEditCommandResult {
+        projection,
+        changed,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericImportCommandResult {
+    pub source: ImportSource,
+    pub revision: ImportRevision,
+    pub report: ParseReport,
+    pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RawImportContentProjection {
+    pub source_id: String,
+    pub content_hash: String,
+    pub byte_length: u64,
+    pub content: String,
+    pub truncated: bool,
 }
 
 type CommandResult<T> = Result<T, CommandError>;
@@ -160,6 +393,346 @@ impl From<ProviderError> for CommandError {
 #[tauri::command]
 pub fn bootstrap_kernel(state: State<'_, KernelState>) -> CommandResult<KernelBootstrap> {
     state.service.bootstrap().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn persist_import_bundle(
+    state: State<'_, KernelState>,
+    source: ImportSource,
+    revision: ImportRevision,
+    messages: Vec<ImportedMessage>,
+    report: ParseReport,
+) -> CommandResult<()> {
+    state
+        .service
+        .persist_import_bundle(&source, &revision, &messages, &report)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn import_generic_file(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    original_file_name: String,
+    payload: Vec<u8>,
+) -> CommandResult<GenericImportCommandResult> {
+    if conversation_id.trim().is_empty() {
+        return Err(CommandError {
+            code: "validation",
+            safe_message: "Conversation id is required.".into(),
+            retryable: false,
+        });
+    }
+    let stored = state
+        .import_storage
+        .store(&original_file_name, &payload)
+        .map_err(|error| CommandError {
+            code: "validation",
+            safe_message: error.to_string(),
+            retryable: false,
+        })?;
+    let source = ImportSource {
+        id: new_id("import-source"),
+        conversation_id,
+        platform: crate::domain::contracts::ImportPlatform::Generic,
+        original_file_name: Some(original_file_name),
+        content_hash: stored.content_hash.clone(),
+        storage_ref: stored.storage_ref.clone(),
+        created_at: now_timestamp(),
+    };
+    let revision_id = new_id("import-revision");
+    let bundle = match parse_generic_import(source, revision_id, stored.format, &payload) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let _ = state.import_storage.discard_if_new(&stored);
+            return Err(CommandError {
+                code: "importParse",
+                safe_message: error.to_string(),
+                retryable: true,
+            });
+        }
+    };
+    let result = GenericImportCommandResult {
+        source: bundle.source.clone(),
+        revision: bundle.revision.clone(),
+        report: bundle.report.clone(),
+        duplicate: stored.duplicate,
+    };
+    if let Err(error) = state.service.persist_import_bundle(
+        &bundle.source,
+        &bundle.revision,
+        &bundle.messages,
+        &bundle.report,
+    ) {
+        let _ = state.import_storage.discard_if_new(&stored);
+        return Err(error.into());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn list_import_sources(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<Vec<ImportSource>> {
+    state
+        .service
+        .list_import_sources(&conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_import_bundle(
+    state: State<'_, KernelState>,
+    source_id: String,
+) -> CommandResult<crate::domain::contracts::ImportBundleQueryProjection> {
+    state
+        .service
+        .get_import_bundle(&source_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_raw_import_content(
+    state: State<'_, KernelState>,
+    source_id: String,
+) -> CommandResult<RawImportContentProjection> {
+    let bundle = state.service.get_import_bundle(&source_id)?;
+    let (content, byte_length, truncated) = state
+        .import_storage
+        .read_verified_text(
+            &bundle.source.storage_ref,
+            &bundle.source.content_hash,
+            1024 * 1024,
+        )
+        .map_err(|error| CommandError {
+            code: "importStorage",
+            safe_message: error.to_string(),
+            retryable: false,
+        })?;
+    Ok(RawImportContentProjection {
+        source_id: bundle.source.id,
+        content_hash: bundle.source.content_hash,
+        byte_length,
+        content,
+        truncated,
+    })
+}
+
+#[tauri::command]
+pub fn create_focus_frame(
+    state: State<'_, KernelState>,
+    frame: FocusFrame,
+) -> CommandResult<FocusFrameLifecycleSnapshot> {
+    state.service.create_focus_frame(frame).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_focus_frame_query(
+    state: State<'_, KernelState>,
+    focus_frame_id: String,
+) -> CommandResult<FocusFrameQueryProjection> {
+    state
+        .service
+        .get_focus_frame_query(&focus_frame_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_focus_promotion_candidates(
+    state: State<'_, KernelState>,
+    focus_frame_id: String,
+    expected_memory_version: Option<u64>,
+) -> CommandResult<Option<FocusPromotionCandidateSet>> {
+    state
+        .service
+        .get_focus_promotion_candidates(&focus_frame_id, expected_memory_version)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn decide_focus_promotion(
+    state: State<'_, KernelState>,
+    input: FocusPromotionDecisionCommandInput,
+) -> CommandResult<FocusPromotionDecisionProjection> {
+    state
+        .service
+        .decide_focus_promotion(&state.markdown_vault, input)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_focus_promotion_decision(
+    state: State<'_, KernelState>,
+    decision_id: String,
+) -> CommandResult<FocusPromotionDecisionProjection> {
+    state
+        .service
+        .get_focus_promotion_decision(&decision_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_focus_promotion_decisions(
+    state: State<'_, KernelState>,
+    focus_frame_id: String,
+) -> CommandResult<Vec<FocusPromotionDecisionProjection>> {
+    state
+        .service
+        .list_focus_promotion_decisions(&focus_frame_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn save_focused_context_snapshot(
+    state: State<'_, KernelState>,
+    snapshot: FocusedContextSnapshot,
+) -> CommandResult<FocusFrameQueryProjection> {
+    state
+        .service
+        .save_focused_context_snapshot(snapshot)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn upsert_knowledge_entity(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    entity: crate::domain::contracts::KnowledgeEntity,
+) -> CommandResult<()> {
+    state
+        .service
+        .upsert_knowledge_entity(&conversation_id, entity)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_knowledge_entities(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<Vec<crate::domain::contracts::KnowledgeEntity>> {
+    state
+        .service
+        .list_knowledge_entities(&conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn upsert_knowledge_relation(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    relation: crate::domain::contracts::KnowledgeRelation,
+) -> CommandResult<()> {
+    state
+        .service
+        .upsert_knowledge_relation(&conversation_id, relation)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_knowledge_relations(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<Vec<crate::domain::contracts::KnowledgeRelation>> {
+    state
+        .service
+        .list_knowledge_relations(&conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn retrieve_knowledge(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    query: String,
+    limit: Option<u32>,
+) -> CommandResult<crate::domain::KnowledgeRetrievalProjection> {
+    let limit = usize::try_from(limit.unwrap_or(12)).map_err(|_| CommandError {
+        code: "validation",
+        safe_message: "Knowledge retrieval limit is invalid.".into(),
+        retryable: false,
+    })?;
+    match state.semantic_embedding() {
+        Some(semantic) => state.service.retrieve_knowledge_with_semantic(
+            &semantic,
+            &conversation_id,
+            &query,
+            limit,
+        ),
+        None => state
+            .service
+            .retrieve_knowledge_without_vector(&conversation_id, &query, limit),
+    }
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn rebuild_knowledge_vector_index(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<usize> {
+    let semantic = state.semantic_embedding().ok_or_else(|| CommandError {
+        code: "semanticModelUnavailable",
+        safe_message:
+            "Install and verify the local semantic model pack before rebuilding the vector index."
+                .into(),
+        retryable: false,
+    })?;
+    state
+        .service
+        .rebuild_knowledge_vector_index_with_semantic(&semantic, &conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_knowledge_entity(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    entity_id: String,
+) -> CommandResult<bool> {
+    state
+        .service
+        .delete_knowledge_entity_and_vault(&state.markdown_vault, &conversation_id, &entity_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn upsert_evidence_ref(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+    evidence: crate::domain::contracts::EvidenceRef,
+) -> CommandResult<()> {
+    state
+        .service
+        .upsert_evidence_ref(&conversation_id, evidence)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_focus_frames(
+    state: State<'_, KernelState>,
+    conversation_id: String,
+) -> CommandResult<Vec<FocusFrameQueryProjection>> {
+    state
+        .service
+        .list_focus_frame_queries(&conversation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn close_focus_frame(
+    state: State<'_, KernelState>,
+    input: FocusFrameLifecycleCommandInput,
+) -> CommandResult<FocusFrameQueryProjection> {
+    state.service.close_focus_frame(input).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn reopen_focus_frame(
+    state: State<'_, KernelState>,
+    input: FocusFrameLifecycleCommandInput,
+) -> CommandResult<FocusFrameQueryProjection> {
+    state.service.reopen_focus_frame(input).map_err(Into::into)
 }
 
 #[tauri::command]

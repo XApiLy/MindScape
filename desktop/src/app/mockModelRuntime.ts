@@ -1,5 +1,6 @@
 import type { ModelRunEvent, ModelRunEventEnvelope } from "../domain";
 import { SUPPORTED_RUNTIME_CONTRACT_VERSION } from "./chatRunState";
+import { chunkMockResponse } from "./mockStreamChunking";
 
 export type MockRunInput = {
   runId: string;
@@ -36,7 +37,7 @@ function createMockResponse(prompt: string, parentTitle?: string) {
 
 export async function runMockModel(input: MockRunInput) {
   const response = createMockResponse(input.prompt, input.parentTitle);
-  const chunks = response.match(/.{1,9}/gu) ?? [response];
+  const chunks = chunkMockResponse(response);
   let sequence = 0;
 
   const emit = (event: ModelRunEvent) => {

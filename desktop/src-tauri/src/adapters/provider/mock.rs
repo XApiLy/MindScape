@@ -7,7 +7,8 @@ use crate::domain::contracts::{
 use crate::domain::{new_id, now_timestamp};
 
 use super::{
-    ModelCapabilities, ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor,
+    GenerationParameterCapabilities, InputModality, ModelCapabilities, ParameterSupport,
+    ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor, ReasoningControl,
     RunCancellation,
 };
 
@@ -41,6 +42,17 @@ impl MockProvider {
                 usage_reporting: true,
                 streaming: true,
                 context_window_tokens: Some(16_384),
+                supports_reasoning: false,
+                reasoning_control: ReasoningControl::None,
+                reasoning_modes: vec![],
+                structured_output: false,
+                generation_parameters: GenerationParameterCapabilities {
+                    max_output_tokens: ParameterSupport::Supported,
+                    temperature: ParameterSupport::Unsupported,
+                    top_p: ParameterSupport::Unsupported,
+                    seed: ParameterSupport::Unsupported,
+                },
+                input_modalities: vec![InputModality::Text],
             },
         );
         Self {

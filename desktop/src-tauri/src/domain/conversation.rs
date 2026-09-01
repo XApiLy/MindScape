@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::{ContentBlock, ContextSnapshot, KernelError, KernelResult};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 16;
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
@@ -295,7 +295,7 @@ pub struct AppendTurnInput {
     pub model_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StartModelRunInput {
     pub conversation_id: String,
@@ -307,6 +307,8 @@ pub struct StartModelRunInput {
     pub model_id: String,
     pub capabilities: Vec<crate::domain::contracts::CapabilityRequirement>,
     pub budget: crate::domain::contracts::ModelRunBudget,
+    #[serde(default)]
+    pub effective_run_profile: Option<crate::domain::contracts::EffectiveRunProfile>,
     pub idempotency_key: String,
 }
 

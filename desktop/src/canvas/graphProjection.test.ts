@@ -7,6 +7,8 @@ import type {
 } from "../domain/index.ts";
 import { APPLICATION_INTERRUPTED_PROVIDER_CODE } from "../domain/runtime.ts";
 import {
+  CANVAS_PREVIEW_LENGTH,
+  markdownToCanvasPreview,
   nextChildPosition,
   projectConversationGraph,
   type CanvasNodeProjection,
@@ -81,10 +83,91 @@ test("projects the domain graph without leaking domain objects", () => {
   assert.deepEqual(projection.nodes[0]?.position, { x: -120, y: 88 });
   assert.deepEqual(projection.nodes[1]?.position, { x: 612, y: 116 });
   assert.equal(projection.nodes[1]?.question, "问题 child");
+  assert.equal(projection.nodes[1]?.questionPreview, "问题 child");
   assert.equal(projection.nodes[1]?.answer, "回答 child");
+  assert.equal(projection.nodes[1]?.answerPreview, "回答 child");
   assert.equal(projection.edges[0]?.relation, "deepens");
+  assert.equal(projection.nodes[0]?.origin.kind, "localRun");
   assert.notStrictEqual(projection.nodes[0], source.nodes[0]);
   assert.equal("userMessage" in projection.nodes[0]!, false);
+});
+
+test("keeps raw Markdown for focused reading and projects a bounded plain-text card preview", () => {
+  const source = graph();
+  const markdown = [
+    "# 交付计划",
+    "",
+    "> 先验证 **事实源**，再进入 [统一验收](https://example.com/release)。",
+    "",
+    "- [x] 保留 `raw markdown`",
+    "- [ ] 不执行 <script>alert('x')</script> 内容",
+    "",
+    "```ts",
+    "const result = verifyRelease();",
+    "```",
+    "",
+    "后续说明".repeat(80),
+  ].join("\n");
+  source.nodes[1] = {
+    ...source.nodes[1]!,
+    assistantMessage: {
+      ...source.nodes[1]!.assistantMessage!,
+      contentBlocks: [{ type: "text", text: markdown }],
+    },
+  };
+
+  const projected = projectConversationGraph(source).nodes[1]!;
+
+  assert.equal(projected.answer, markdown, "raw Markdown must remain available to the reader");
+  assert.match(projected.answerPreview!, /^交付计划 先验证 事实源，再进入 统一验收。/);
+  assert.equal(projected.answerPreview!.includes("<script>"), false);
+  assert.equal(projected.answerPreview!.includes("https://example.com"), false);
+  assert.equal(Array.from(projected.answerPreview!).length, CANVAS_PREVIEW_LENGTH);
+  assert.equal(projected.answerPreview!.endsWith("…"), true);
+});
+
+test("bounds preview work for long streaming Markdown and keeps Unicode intact", () => {
+  const preview = markdownToCanvasPreview(`## 标题\n${"🧠结构化内容 ".repeat(2_000)}`, 42);
+
+  assert.equal(Array.from(preview).length, 42);
+  assert.equal(preview.startsWith("标题 🧠结构化内容"), true);
+  assert.equal(preview.endsWith("…"), true);
+  assert.equal(preview.includes("�"), false);
+});
+
+test("marks explicit imported domain nodes without changing graph semantics", () => {
+  const relationSource = graph();
+  relationSource.nodes[1] = {
+    ...relationSource.nodes[1]!,
+    branchType: "importedFrom",
+  };
+  relationSource.edges[0] = {
+    ...relationSource.edges[0]!,
+    relation: "importedFrom",
+  };
+
+  const projection = projectConversationGraph(relationSource);
+  const importedNode = projection.nodes.find((item) => item.id === "child");
+
+  assert.equal(importedNode?.origin.kind, "importedSource");
+  assert.equal(importedNode?.branchType, "importedFrom");
+  assert.deepEqual(importedNode?.position, { x: 612, y: 116 });
+  assert.equal(projection.edges[0]?.relation, "importedFrom");
+  assert.equal(projection.nodes.length, 2);
+  assert.equal(projection.edges.length, 1);
+
+  const messageSource = graph();
+  messageSource.nodes[1] = {
+    ...messageSource.nodes[1]!,
+    userMessage: {
+      ...messageSource.nodes[1]!.userMessage,
+      role: "imported",
+    },
+  };
+  assert.equal(
+    projectConversationGraph(messageSource).nodes.find((item) => item.id === "child")?.origin.kind,
+    "importedSource",
+  );
 });
 
 test("local drag positions override persisted and automatic positions", () => {

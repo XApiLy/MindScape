@@ -1,3 +1,4 @@
+mod discussion;
 mod events;
 mod evidence;
 mod focus;
@@ -5,6 +6,10 @@ mod imports;
 mod knowledge;
 mod runtime;
 
+pub use discussion::{
+    DISCUSSION_LOG_CONTRACT_VERSION, DISCUSSION_LOG_PROJECTION_CONTRACT_VERSION, DiscussionLog,
+    DiscussionLogProjection, DiscussionLogScope,
+};
 pub use events::{AggregateType, DomainEventEnvelope, DomainEventType, EVENT_CONTRACT_VERSION};
 pub use evidence::{EVIDENCE_CONTRACT_VERSION, EvidenceRef, EvidenceTarget};
 pub use focus::{
@@ -14,9 +19,9 @@ pub use focus::{
 pub use imports::{
     AnalysisMode, ContinuationClaim, ContinuationStatus, DerivedContinuation, FieldRecovery,
     GENERIC_IMPORT_CONTRACT_VERSION, GenericImportDescriptor, IMPORT_CONTRACT_VERSION,
-    ImportAnalysisPolicy, ImportFormat, ImportGraphProjection, ImportIngress, ImportIssue,
-    ImportPlatform, ImportRevision, ImportRevisionStatus, ImportSource, ImportedMessage,
-    ParseReport, RawTrackEntry, RecoveryStatus,
+    ImportAnalysisPolicy, ImportBundleQueryProjection, ImportFormat, ImportGraphProjection,
+    ImportIngress, ImportIssue, ImportPlatform, ImportRevision, ImportRevisionStatus, ImportSource,
+    ImportedMessage, ParseReport, RawTrackEntry, RecoveryStatus,
 };
 pub use knowledge::{
     GeneratorKind, GeneratorRef, KNOWLEDGE_CONTRACT_VERSION, KnowledgeEntity, KnowledgeEntityKind,

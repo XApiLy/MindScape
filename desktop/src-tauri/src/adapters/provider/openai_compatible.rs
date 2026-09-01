@@ -6,15 +6,17 @@ use serde::{Deserialize, Serialize};
 use crate::{
     adapters::CredentialService,
     domain::contracts::{
-        FinishReason, ModelRunEvent, ModelRunEventEnvelope, ModelRunRequest, ModelUsage,
-        ProviderError, ProviderErrorCategory, RUNTIME_CONTRACT_VERSION, RunCancelReason,
+        EffectiveRunProfile, FinishReason, ModelRunEvent, ModelRunEventEnvelope, ModelRunRequest,
+        ModelUsage, ProviderError, ProviderErrorCategory, RUNTIME_CONTRACT_VERSION, ReasoningMode,
+        RunCancelReason,
     },
     domain::{CredentialError, CredentialRef, blocks_plain_text, new_id, now_timestamp},
 };
 
 use super::{
-    ModelCapabilities, ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor,
-    RunCancellation, SseDecoder,
+    GenerationParameterCapabilities, InputModality, ModelCapabilities, ParameterSupport,
+    ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor, ProviderReasoningMode,
+    ReasoningControl, RunCancellation, SseDecoder,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -88,6 +90,21 @@ impl OpenAiCompatibleProvider {
                         usage_reporting: true,
                         streaming: true,
                         context_window_tokens: Some(1_000_000),
+                        supports_reasoning: true,
+                        reasoning_control: ReasoningControl::Effort,
+                        reasoning_modes: vec![
+                            ProviderReasoningMode::Disabled,
+                            ProviderReasoningMode::High,
+                            ProviderReasoningMode::Max,
+                        ],
+                        structured_output: true,
+                        generation_parameters: GenerationParameterCapabilities {
+                            max_output_tokens: ParameterSupport::Supported,
+                            temperature: ParameterSupport::NonReasoningOnly,
+                            top_p: ParameterSupport::NonReasoningOnly,
+                            seed: ParameterSupport::Unsupported,
+                        },
+                        input_modalities: vec![InputModality::Text],
                     },
                 )
             })
@@ -204,7 +221,7 @@ impl OpenAiCompatibleProvider {
         }
 
         let credential = self.credential()?;
-        let body = request_body(request, &self.config);
+        let body = request_body(request, &self.config)?;
         let total_timeout = Duration::from_millis(request.budget.timeout_ms.max(1));
         let send = self
             .client
@@ -232,12 +249,8 @@ impl OpenAiCompatibleProvider {
         }
 
         let mut sequence = 1;
-        let mut retained_content = false;
-        let mut received_reasoning_content = false;
+        let mut stream = OpenAiStreamAccumulator::default();
         let mut decoder = SseDecoder::default();
-        let mut final_reason = FinishReason::Unknown;
-        let mut terminal_error = None;
-        let mut latest_usage = ModelUsage::default();
         emit_event(request, sequence, ModelRunEvent::Started, emit);
         let first_token_deadline =
             tokio::time::Instant::now() + FIRST_TOKEN_TIMEOUT.min(total_timeout);
@@ -251,10 +264,7 @@ impl OpenAiCompatibleProvider {
                     emit_event(
                         request,
                         next_sequence(&mut sequence),
-                        ModelRunEvent::Cancelled {
-                            reason: RunCancelReason::UserRequested,
-                            partial_content_retained: retained_content,
-                        },
+                        stream.cancelled_event(),
                         emit,
                     );
                     return Ok(());
@@ -267,73 +277,38 @@ impl OpenAiCompatibleProvider {
                 })),
                 result = response.chunk() => result,
             };
-            let bytes = next
-                .map_err(map_reqwest_error)?
-                .ok_or_else(|| network_error("stream_ended_without_done", retained_content))?;
-            let frames = decoder
-                .push(&bytes)
-                .map_err(|_| network_error("invalid_sse_utf8", retained_content))?;
+            let bytes = next.map_err(map_reqwest_error)?;
+            let stream_ended = bytes.is_none();
+            let frames = if let Some(bytes) = bytes {
+                decoder
+                    .push(&bytes)
+                    .map_err(|_| network_error("invalid_sse_utf8", stream.retained_content))?
+            } else {
+                decoder
+                    .finish()
+                    .map_err(|_| network_error("invalid_sse_utf8", stream.retained_content))?
+                    .into_iter()
+                    .collect()
+            };
             if !frames.is_empty() {
                 received_data_event = true;
                 idle_deadline =
                     tokio::time::Instant::now() + STREAM_IDLE_TIMEOUT.min(total_timeout);
             }
             for frame in frames {
-                if frame.data == "[DONE]" {
-                    let event = terminal_event(
-                        terminal_error,
-                        final_reason,
-                        latest_usage,
-                        retained_content,
-                        received_reasoning_content,
-                    );
+                let frame_result = stream.apply_frame(&frame)?;
+                for event in frame_result.events {
+                    emit_event(request, next_sequence(&mut sequence), event, emit);
+                }
+                if let Some(event) = frame_result.terminal {
                     emit_event(request, next_sequence(&mut sequence), event, emit);
                     return Ok(());
                 }
-                let chunk: ChatCompletionChunk = serde_json::from_str(&frame.data)
-                    .map_err(|_| network_error("invalid_stream_event", retained_content))?;
-                for choice in chunk.choices {
-                    received_reasoning_content |= choice
-                        .delta
-                        .reasoning_content
-                        .as_deref()
-                        .is_some_and(|content| !content.is_empty());
-                    if let Some(delta) = choice.delta.content
-                        && !delta.is_empty()
-                    {
-                        retained_content = true;
-                        emit_event(
-                            request,
-                            next_sequence(&mut sequence),
-                            ModelRunEvent::TextDelta { delta },
-                            emit,
-                        );
-                    }
-                    if let Some(reason) = choice.finish_reason {
-                        if reason == "insufficient_system_resource" {
-                            terminal_error = Some(provider_error(
-                                ProviderErrorCategory::Network,
-                                "insufficient_system_resource",
-                                "The provider could not complete the request due to insufficient capacity.",
-                                true,
-                                None,
-                            ));
-                        } else {
-                            final_reason = map_finish_reason(&reason);
-                        }
-                    }
-                }
-                if let Some(usage) = chunk.usage {
-                    latest_usage = usage.into();
-                    emit_event(
-                        request,
-                        next_sequence(&mut sequence),
-                        ModelRunEvent::UsageUpdated {
-                            usage: latest_usage.clone(),
-                        },
-                        emit,
-                    );
-                }
+            }
+            if stream_ended {
+                let event = stream.finish_at_eof()?;
+                emit_event(request, next_sequence(&mut sequence), event, emit);
+                return Ok(());
             }
         }
     }
@@ -388,6 +363,14 @@ struct ChatCompletionRequest {
     max_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -401,16 +384,115 @@ struct StreamOptions {
     include_usage: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct ThinkingConfig {
     #[serde(rename = "type")]
     mode: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct EffectiveDeepSeekParameters {
+    thinking: ThinkingConfig,
+    reasoning_effort: Option<String>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    max_tokens: Option<u64>,
+    response_format: Option<serde_json::Value>,
+}
+
+fn map_effective_deepseek_profile(
+    profile: &EffectiveRunProfile,
+) -> Result<EffectiveDeepSeekParameters, ProviderError> {
+    let reasoning_enabled = !matches!(profile.reasoning_mode, ReasoningMode::Off);
+    if reasoning_enabled
+        && (profile.generation_parameters.temperature.is_some()
+            || profile.generation_parameters.top_p.is_some())
+    {
+        return Err(provider_error(
+            ProviderErrorCategory::InvalidRequest,
+            "unsupported_parameter_combination",
+            "Temperature and top_p are not supported with DeepSeek thinking mode.",
+            false,
+            None,
+        ));
+    }
+    if profile.generation_parameters.seed.is_some() {
+        return Err(provider_error(
+            ProviderErrorCategory::InvalidRequest,
+            "unsupported_parameter",
+            "The selected DeepSeek model does not support seed.",
+            false,
+            None,
+        ));
+    }
+    if profile.reasoning_budget.is_some() {
+        return Err(provider_error(
+            ProviderErrorCategory::InvalidRequest,
+            "unsupported_reasoning_budget",
+            "The selected DeepSeek model uses reasoning effort instead of a token budget.",
+            false,
+            None,
+        ));
+    }
+    let reasoning_effort = match profile.reasoning_mode {
+        ReasoningMode::Off => None,
+        ReasoningMode::Standard => Some("high".into()),
+        ReasoningMode::Deep => Some("max".into()),
+        ReasoningMode::Custom => Some(
+            profile
+                .generation_parameters
+                .vendor_parameters
+                .get("reasoning_effort")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+                .filter(|value| matches!(value.as_str(), "high" | "max"))
+                .ok_or_else(|| {
+                    provider_error(
+                        ProviderErrorCategory::InvalidRequest,
+                        "invalid_reasoning_effort",
+                        "Custom DeepSeek reasoning requires reasoning_effort high or max.",
+                        false,
+                        None,
+                    )
+                })?,
+        ),
+    };
+    let response_format = match profile.generation_parameters.response_format.as_deref() {
+        None => None,
+        Some("json_object") => Some(serde_json::json!({"type": "json_object"})),
+        Some(_) => {
+            return Err(provider_error(
+                ProviderErrorCategory::InvalidRequest,
+                "unsupported_response_format",
+                "The selected DeepSeek model only supports json_object structured output.",
+                false,
+                None,
+            ));
+        }
+    };
+    Ok(EffectiveDeepSeekParameters {
+        thinking: ThinkingConfig {
+            mode: if reasoning_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        },
+        reasoning_effort,
+        temperature: profile.generation_parameters.temperature,
+        top_p: profile.generation_parameters.top_p,
+        max_tokens: profile
+            .generation_parameters
+            .max_output_tokens
+            .or(profile.budget_envelope.max_output_tokens),
+        response_format,
+    })
+}
+
 fn request_body(
     request: &ModelRunRequest,
     config: &OpenAiCompatibleConfig,
-) -> ChatCompletionRequest {
+) -> Result<ChatCompletionRequest, ProviderError> {
     let mut messages = request
         .context_snapshot
         .selected_messages
@@ -429,18 +511,59 @@ fn request_body(
         role: "user".into(),
         content: request.context_snapshot.current_input.clone(),
     });
-    ChatCompletionRequest {
+    let effective = request
+        .effective_run_profile
+        .as_ref()
+        .map(|profile| {
+            if profile.contract_version
+                != crate::domain::contracts::EFFECTIVE_RUN_PROFILE_CONTRACT_VERSION
+            {
+                return Err(provider_error(
+                    ProviderErrorCategory::InvalidRequest,
+                    "unsupported_run_profile_contract",
+                    "The effective run profile contract is not supported.",
+                    false,
+                    None,
+                ));
+            }
+            if profile.provider_id != request.provider_id || profile.model_id != request.model_id {
+                return Err(provider_error(
+                    ProviderErrorCategory::InvalidRequest,
+                    "run_profile_target_mismatch",
+                    "The effective run profile does not match the selected provider and model.",
+                    false,
+                    None,
+                ));
+            }
+            map_effective_deepseek_profile(profile)
+        })
+        .transpose()?;
+    Ok(ChatCompletionRequest {
         model: request.model_id.clone(),
         messages,
         stream: true,
         stream_options: StreamOptions {
             include_usage: true,
         },
-        max_tokens: request.budget.max_output_tokens,
-        thinking: config
-            .disable_thinking
-            .then_some(ThinkingConfig { mode: "disabled" }),
-    }
+        max_tokens: effective
+            .as_ref()
+            .and_then(|value| value.max_tokens)
+            .or(request.budget.max_output_tokens),
+        thinking: effective
+            .as_ref()
+            .map(|value| value.thinking.clone())
+            .or_else(|| {
+                config
+                    .disable_thinking
+                    .then_some(ThinkingConfig { mode: "disabled" })
+            }),
+        reasoning_effort: effective
+            .as_ref()
+            .and_then(|value| value.reasoning_effort.clone()),
+        temperature: effective.as_ref().and_then(|value| value.temperature),
+        top_p: effective.as_ref().and_then(|value| value.top_p),
+        response_format: effective.and_then(|value| value.response_format),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -468,6 +591,110 @@ struct OpenAiUsage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     prompt_cache_hit_tokens: Option<u64>,
+}
+
+#[derive(Debug)]
+struct StreamFrameResult {
+    events: Vec<ModelRunEvent>,
+    terminal: Option<ModelRunEvent>,
+}
+
+#[derive(Debug)]
+struct OpenAiStreamAccumulator {
+    retained_content: bool,
+    received_reasoning_content: bool,
+    final_reason: FinishReason,
+    terminal_error: Option<ProviderError>,
+    latest_usage: ModelUsage,
+}
+
+impl Default for OpenAiStreamAccumulator {
+    fn default() -> Self {
+        Self {
+            retained_content: false,
+            received_reasoning_content: false,
+            final_reason: FinishReason::Unknown,
+            terminal_error: None,
+            latest_usage: ModelUsage::default(),
+        }
+    }
+}
+
+impl OpenAiStreamAccumulator {
+    fn cancelled_event(&self) -> ModelRunEvent {
+        ModelRunEvent::Cancelled {
+            reason: RunCancelReason::UserRequested,
+            partial_content_retained: self.retained_content,
+        }
+    }
+
+    fn apply_frame(&mut self, frame: &super::SseFrame) -> Result<StreamFrameResult, ProviderError> {
+        if frame.data == "[DONE]" {
+            return Ok(StreamFrameResult {
+                events: Vec::new(),
+                terminal: Some(self.terminal_event()),
+            });
+        }
+        let chunk: ChatCompletionChunk = serde_json::from_str(&frame.data)
+            .map_err(|_| network_error("invalid_stream_event", self.retained_content))?;
+        let mut events = Vec::new();
+        for choice in chunk.choices {
+            self.received_reasoning_content |= choice
+                .delta
+                .reasoning_content
+                .as_deref()
+                .is_some_and(|content| !content.is_empty());
+            if let Some(delta) = choice.delta.content
+                && !delta.is_empty()
+            {
+                self.retained_content = true;
+                events.push(ModelRunEvent::TextDelta { delta });
+            }
+            if let Some(reason) = choice.finish_reason {
+                if reason == "insufficient_system_resource" {
+                    self.terminal_error = Some(provider_error(
+                        ProviderErrorCategory::Network,
+                        "insufficient_system_resource",
+                        "The provider could not complete the request due to insufficient capacity.",
+                        true,
+                        None,
+                    ));
+                } else {
+                    self.final_reason = map_finish_reason(&reason);
+                }
+            }
+        }
+        if let Some(usage) = chunk.usage {
+            self.latest_usage = usage.into();
+            events.push(ModelRunEvent::UsageUpdated {
+                usage: self.latest_usage.clone(),
+            });
+        }
+        Ok(StreamFrameResult {
+            events,
+            terminal: None,
+        })
+    }
+
+    fn finish_at_eof(&mut self) -> Result<ModelRunEvent, ProviderError> {
+        if self.final_reason == FinishReason::Unknown && self.terminal_error.is_none() {
+            return Err(network_error(
+                "stream_ended_without_done",
+                self.retained_content,
+            ));
+        }
+        Ok(self.terminal_event())
+    }
+
+    fn terminal_event(&mut self) -> ModelRunEvent {
+        terminal_event(
+            self.terminal_error.take(),
+            self.final_reason,
+            std::mem::take(&mut self.latest_usage),
+            self.retained_content,
+            self.received_reasoning_content,
+        )
+    }
 }
 
 impl From<OpenAiUsage> for ModelUsage {
@@ -688,8 +915,12 @@ fn provider_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::contracts::{CapabilityRequirement, ModelRunBudget};
+    use crate::domain::contracts::{
+        CapabilityRequirement, EffectiveRunProfile, GenerationParameters, ModelRunBudget,
+        RunBudgetEnvelope, RunCapabilitySnapshot, RunValueOrigin, ToolPermission,
+    };
     use crate::domain::{BranchType, ContextSnapshot};
+    use std::collections::BTreeMap;
 
     fn request() -> ModelRunRequest {
         ModelRunRequest {
@@ -719,14 +950,161 @@ mod tests {
                 max_cost_microunits: None,
                 timeout_ms: 30_000,
             },
+            effective_run_profile: None,
             idempotency_key: "idempotency-test".into(),
             created_at: "2026-08-18T00:00:00Z".into(),
         }
     }
 
+    fn profile(mode: ReasoningMode) -> EffectiveRunProfile {
+        EffectiveRunProfile {
+            contract_version: "mindscape.effective-run-profile.v1".into(),
+            provider_id: "deepseek".into(),
+            model_id: "deepseek-v4-flash".into(),
+            reasoning_mode: mode,
+            reasoning_budget: None,
+            generation_parameters: GenerationParameters {
+                temperature: None,
+                top_p: None,
+                max_output_tokens: Some(512),
+                response_format: None,
+                seed: None,
+                vendor_parameters: BTreeMap::new(),
+            },
+            context_policy: "focused".into(),
+            allowed_capabilities: vec![CapabilityRequirement::TextInput],
+            tool_permission: ToolPermission::Disabled,
+            budget_envelope: RunBudgetEnvelope {
+                max_input_tokens: None,
+                max_reasoning_tokens: None,
+                max_output_tokens: Some(1024),
+                max_cost_microunits: None,
+                timeout_ms: 30_000,
+            },
+            value_origins: BTreeMap::<String, RunValueOrigin>::new(),
+            capability_snapshot: RunCapabilitySnapshot {
+                catalog_version: "m2".into(),
+                context_window_tokens: Some(1_000_000),
+                supported_capabilities: vec![CapabilityRequirement::TextInput],
+                unsupported_parameters: vec![],
+            },
+        }
+    }
+
+    fn decode_stream_fixture(
+        fixture: &[u8],
+        network_chunk_size: usize,
+    ) -> Result<Vec<ModelRunEvent>, ProviderError> {
+        let mut decoder = SseDecoder::default();
+        let mut stream = OpenAiStreamAccumulator::default();
+        let mut events = Vec::new();
+        for chunk in fixture.chunks(network_chunk_size.max(1)) {
+            let frames = decoder
+                .push(chunk)
+                .map_err(|_| network_error("invalid_sse_utf8", stream.retained_content))?;
+            for frame in frames {
+                let result = stream.apply_frame(&frame)?;
+                events.extend(result.events);
+                if let Some(terminal) = result.terminal {
+                    events.push(terminal);
+                    return Ok(events);
+                }
+            }
+        }
+        if let Some(frame) = decoder
+            .finish()
+            .map_err(|_| network_error("invalid_sse_utf8", stream.retained_content))?
+        {
+            let result = stream.apply_frame(&frame)?;
+            events.extend(result.events);
+            if let Some(terminal) = result.terminal {
+                events.push(terminal);
+                return Ok(events);
+            }
+        }
+        events.push(stream.finish_at_eof()?);
+        Ok(events)
+    }
+
+    #[test]
+    fn maps_deepseek_reasoning_modes_deterministically() {
+        assert_eq!(
+            map_effective_deepseek_profile(&profile(ReasoningMode::Off))
+                .unwrap()
+                .thinking
+                .mode,
+            "disabled"
+        );
+        assert_eq!(
+            map_effective_deepseek_profile(&profile(ReasoningMode::Standard))
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            map_effective_deepseek_profile(&profile(ReasoningMode::Deep))
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("max")
+        );
+    }
+
+    #[test]
+    fn rejects_thinking_sampling_and_reasoning_token_budget() {
+        let mut sampling = profile(ReasoningMode::Standard);
+        sampling.generation_parameters.temperature = Some(0.7);
+        assert_eq!(
+            map_effective_deepseek_profile(&sampling)
+                .unwrap_err()
+                .provider_code
+                .as_deref(),
+            Some("unsupported_parameter_combination")
+        );
+        let mut budget = profile(ReasoningMode::Deep);
+        budget.reasoning_budget = Some(256);
+        assert_eq!(
+            map_effective_deepseek_profile(&budget)
+                .unwrap_err()
+                .provider_code
+                .as_deref(),
+            Some("unsupported_reasoning_budget")
+        );
+    }
+
+    #[test]
+    fn effective_profile_is_serialized_into_the_provider_request() {
+        let mut request = request();
+        let mut effective = profile(ReasoningMode::Deep);
+        effective.generation_parameters.response_format = Some("json_object".into());
+        request.effective_run_profile = Some(effective);
+        let body = request_body(&request, &OpenAiCompatibleConfig::deepseek()).unwrap();
+        let value = serde_json::to_value(body).expect("serialize request body");
+        assert_eq!(value["thinking"]["type"], "enabled");
+        assert_eq!(value["reasoning_effort"], "max");
+        assert_eq!(value["max_tokens"], 512);
+        assert_eq!(value["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn rejects_a_profile_for_a_different_runtime_target() {
+        let mut request = request();
+        let mut effective = profile(ReasoningMode::Off);
+        effective.model_id = "different-model".into();
+        request.effective_run_profile = Some(effective);
+        assert_eq!(
+            request_body(&request, &OpenAiCompatibleConfig::deepseek())
+                .unwrap_err()
+                .provider_code
+                .as_deref(),
+            Some("run_profile_target_mismatch")
+        );
+    }
+
     #[test]
     fn builds_only_frozen_context_and_current_input() {
-        let body = request_body(&request(), &OpenAiCompatibleConfig::deepseek());
+        let body = request_body(&request(), &OpenAiCompatibleConfig::deepseek()).unwrap();
         assert_eq!(body.messages.len(), 1);
         assert_eq!(body.messages[0].content, "当前问题");
         assert_eq!(body.model, "deepseek-v4-flash");
@@ -735,7 +1113,7 @@ mod tests {
 
     #[test]
     fn deepseek_requests_visible_answer_mode() {
-        let body = request_body(&request(), &OpenAiCompatibleConfig::deepseek());
+        let body = request_body(&request(), &OpenAiCompatibleConfig::deepseek()).unwrap();
         let value = serde_json::to_value(body).expect("serialize request body");
         assert_eq!(value["thinking"]["type"], "disabled");
     }
@@ -781,6 +1159,246 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_only_stop_is_failed_as_empty_visible_response() {
+        let ModelRunEvent::Failed {
+            error,
+            partial_content_retained,
+        } = terminal_event(None, FinishReason::Stop, ModelUsage::default(), false, true)
+        else {
+            panic!("reasoning-only stop must fail");
+        };
+        assert!(!partial_content_retained);
+        assert_eq!(
+            error.provider_code.as_deref(),
+            Some("empty_visible_response")
+        );
+    }
+
+    #[test]
+    fn reasoning_with_visible_content_completes_and_retains_usage() {
+        let usage = ModelUsage {
+            input_tokens: Some(12),
+            output_tokens: Some(34),
+            cached_input_tokens: Some(3),
+            cost_microunits: None,
+        };
+        let ModelRunEvent::Completed {
+            finish_reason,
+            usage: retained,
+        } = terminal_event(None, FinishReason::Stop, usage.clone(), true, true)
+        else {
+            panic!("visible content must complete");
+        };
+        assert_eq!(finish_reason, FinishReason::Stop);
+        assert_eq!(retained, usage);
+    }
+
+    #[test]
+    fn provider_terminal_error_wins_over_partial_content() {
+        let provider_failure = provider_error(
+            ProviderErrorCategory::Network,
+            "insufficient_system_resource",
+            "The provider could not complete the request due to insufficient capacity.",
+            true,
+            None,
+        );
+        let ModelRunEvent::Failed {
+            error,
+            partial_content_retained,
+        } = terminal_event(
+            Some(provider_failure),
+            FinishReason::Stop,
+            ModelUsage::default(),
+            true,
+            false,
+        )
+        else {
+            panic!("provider error must be terminal");
+        };
+        assert_eq!(
+            error.provider_code.as_deref(),
+            Some("insufficient_system_resource")
+        );
+        assert!(partial_content_retained);
+    }
+
+    #[test]
+    fn decodes_deepseek_reasoning_content_and_usage_fixture_without_merging_channels() {
+        let reasoning: ChatCompletionChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"reasoning_content":"内部推理"},"finish_reason":null}],"usage":null}"#,
+        )
+        .expect("reasoning fixture");
+        assert_eq!(
+            reasoning.choices[0].delta.reasoning_content.as_deref(),
+            Some("内部推理")
+        );
+        assert!(reasoning.choices[0].delta.content.is_none());
+
+        let visible: ChatCompletionChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":"可见答案"},"finish_reason":"stop"}],"usage":null}"#,
+        )
+        .expect("visible fixture");
+        assert_eq!(
+            visible.choices[0].delta.content.as_deref(),
+            Some("可见答案")
+        );
+        assert!(visible.choices[0].delta.reasoning_content.is_none());
+
+        let usage: ChatCompletionChunk = serde_json::from_str(
+            r#"{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":11,"prompt_cache_hit_tokens":2}}"#,
+        )
+        .expect("usage fixture");
+        assert_eq!(
+            ModelUsage::from(usage.usage.expect("usage")),
+            ModelUsage {
+                input_tokens: Some(7),
+                output_tokens: Some(11),
+                cached_input_tokens: Some(2),
+                cost_microunits: None,
+            }
+        );
+    }
+
+    #[test]
+    fn streamed_markdown_fixture_preserves_unclosed_source_and_flushes_terminal_usage() {
+        let events =
+            decode_stream_fixture(include_bytes!("fixtures/deepseek_markdown_unclosed.sse"), 7)
+                .expect("decode markdown stream fixture");
+        let raw_markdown = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelRunEvent::TextDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(
+            raw_markdown,
+            "# 流式标题\n\n| 列 | 值 |\n| --- | --- |\n| A | 1 |\n\n```rust\nfn main() {"
+        );
+        assert!(!raw_markdown.ends_with("```"));
+        assert!(matches!(
+            events.last(),
+            Some(ModelRunEvent::Completed {
+                finish_reason: FinishReason::Stop,
+                usage: ModelUsage {
+                    input_tokens: Some(21),
+                    output_tokens: Some(34),
+                    cached_input_tokens: Some(5),
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn reasoning_only_fixture_keeps_usage_event_and_fails_visible_answer() {
+        let events = decode_stream_fixture(
+            include_bytes!("fixtures/deepseek_reasoning_only_length.sse"),
+            5,
+        )
+        .expect("decode reasoning-only fixture");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelRunEvent::UsageUpdated {
+                usage: ModelUsage {
+                    output_tokens: Some(256),
+                    ..
+                }
+            }
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ModelRunEvent::Failed { error, partial_content_retained: false })
+                if error.provider_code.as_deref() == Some("visible_response_exhausted")
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ModelRunEvent::TextDelta { .. }))
+        );
+    }
+
+    #[test]
+    fn empty_visible_fixture_is_failed_without_synthesizing_markdown() {
+        let events =
+            decode_stream_fixture(include_bytes!("fixtures/deepseek_empty_visible.sse"), 3)
+                .expect("decode empty visible fixture");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events.last(),
+            Some(ModelRunEvent::Failed { error, partial_content_retained: false })
+                if error.provider_code.as_deref() == Some("empty_visible_response")
+        ));
+    }
+
+    #[test]
+    fn provider_failure_fixture_retains_partial_unclosed_markdown() {
+        let events = decode_stream_fixture(
+            include_bytes!("fixtures/deepseek_partial_provider_failure.sse"),
+            8,
+        )
+        .expect("decode provider failure fixture");
+        assert!(matches!(
+            events.as_slice(),
+            [
+                ModelRunEvent::TextDelta { delta },
+                ModelRunEvent::Failed {
+                    error,
+                    partial_content_retained: true
+                }
+            ] if delta == "> 未完成引用\n\n```json\n{\"partial\":"
+                && error.provider_code.as_deref() == Some("insufficient_system_resource")
+        ));
+    }
+
+    #[test]
+    fn cancellation_after_partial_markdown_retains_raw_content() {
+        let frame = crate::adapters::provider::SseFrame {
+            event: None,
+            data: r#"{"choices":[{"delta":{"content":"```text\n未完成"},"finish_reason":null}],"usage":null}"#.into(),
+            id: None,
+            retry_ms: None,
+        };
+        let mut stream = OpenAiStreamAccumulator::default();
+        let result = stream.apply_frame(&frame).expect("decode partial markdown");
+        assert!(matches!(
+            result.events.as_slice(),
+            [ModelRunEvent::TextDelta { delta }] if delta == "```text\n未完成"
+        ));
+        assert!(matches!(
+            stream.cancelled_event(),
+            ModelRunEvent::Cancelled {
+                reason: RunCancelReason::UserRequested,
+                partial_content_retained: true
+            }
+        ));
+    }
+
+    #[test]
+    fn eof_with_finish_reason_completes_without_done_sentinel() {
+        let fixture = r#"data: {"choices":[{"delta":{"content":"结尾"},"finish_reason":"stop"}],"usage":null}"#
+            .as_bytes();
+        let events = decode_stream_fixture(fixture, 4).expect("flush final frame at eof");
+        assert!(matches!(
+            events.as_slice(),
+            [ModelRunEvent::TextDelta { delta }, ModelRunEvent::Completed { finish_reason: FinishReason::Stop, .. }]
+                if delta == "结尾"
+        ));
+    }
+
+    #[test]
+    fn eof_without_finish_reason_fails_and_marks_partial_content_retryable() {
+        let fixture = r#"data: {"choices":[{"delta":{"content":"未完成"},"finish_reason":null}],"usage":null}"#
+            .as_bytes();
+        let error = decode_stream_fixture(fixture, 6).expect_err("reject truncated stream");
+        assert_eq!(
+            error.provider_code.as_deref(),
+            Some("stream_ended_without_done")
+        );
+        assert!(error.retryable);
+    }
+
+    #[test]
     fn maps_errors_without_exposing_provider_response_bodies() {
         let error = map_http_error(StatusCode::UNAUTHORIZED, &reqwest::header::HeaderMap::new());
         assert_eq!(error.category, ProviderErrorCategory::Authentication);
@@ -818,6 +1436,37 @@ mod tests {
         assert_eq!(
             provider.descriptor.models["deepseek-v4-flash"].context_window_tokens,
             Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn deepseek_descriptor_declares_reasoning_controls_without_silent_sampling() {
+        let provider = OpenAiCompatibleProvider::new(
+            OpenAiCompatibleConfig::deepseek(),
+            CredentialService::os_default(),
+        )
+        .expect("create provider");
+        let capabilities = &provider.descriptor.models["deepseek-v4-flash"];
+        assert_eq!(capabilities.reasoning_control, ReasoningControl::Effort);
+        assert_eq!(
+            capabilities.generation_parameters.temperature,
+            ParameterSupport::NonReasoningOnly
+        );
+    }
+
+    #[test]
+    fn deepseek_capability_snapshot_serializes_for_frontend_contract() {
+        let provider = OpenAiCompatibleProvider::new(
+            OpenAiCompatibleConfig::deepseek(),
+            CredentialService::os_default(),
+        )
+        .expect("create provider");
+        let value = serde_json::to_value(&provider.descriptor.models["deepseek-v4-flash"])
+            .expect("serialize capabilities");
+        assert_eq!(value["reasoningControl"], "effort");
+        assert_eq!(
+            value["generationParameters"]["temperature"],
+            "nonReasoningOnly"
         );
     }
 

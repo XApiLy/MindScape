@@ -1,4 +1,4 @@
-import type { ModelSelection, ProviderDescriptor } from "../domain";
+import type { ModelCapabilities, ModelSelection, ProviderDescriptor } from "../domain";
 
 export type ProviderCredentialStatus = Record<string, boolean>;
 
@@ -8,7 +8,40 @@ export type ChatModelOption = ModelSelection & {
   available: boolean;
   availabilityLabel: string;
   isMock: boolean;
+  capabilities: ModelCapabilities;
 };
+
+export type ModelCapabilityBadge = {
+  label: string;
+  tone: "supported" | "limited" | "unavailable";
+};
+
+function parameterBadge(label: string, support: ModelCapabilities["generationParameters"][keyof ModelCapabilities["generationParameters"]]): ModelCapabilityBadge {
+  if (support === "supported") return { label: `${label} 可用`, tone: "supported" };
+  if (support === "nonReasoningOnly") return { label: `${label}（仅非思考）`, tone: "limited" };
+  return { label: `${label} 未声明`, tone: "unavailable" };
+}
+
+export function describeModelCapabilities(capabilities: ModelCapabilities): ModelCapabilityBadge[] {
+  const reasoning = capabilities.supportsReasoning && capabilities.reasoningModes.length > 0
+    ? { label: `思考：${capabilities.reasoningModes.join(" / ")}`, tone: "supported" as const }
+    : { label: "思考模式未声明", tone: "unavailable" as const };
+  return [
+    reasoning,
+    capabilities.structuredOutput
+      ? { label: "结构化输出可用", tone: "supported" as const }
+      : { label: "结构化输出未声明", tone: "unavailable" as const },
+    capabilities.toolCalling
+      ? { label: "工具调用已声明", tone: "supported" as const }
+      : { label: "工具闭环未接入", tone: "unavailable" as const },
+    capabilities.streaming
+      ? { label: "流式输出可用", tone: "supported" as const }
+      : { label: "流式输出未声明", tone: "unavailable" as const },
+    parameterBadge("temperature", capabilities.generationParameters.temperature),
+    parameterBadge("top_p", capabilities.generationParameters.topP),
+    parameterBadge("seed", capabilities.generationParameters.seed),
+  ];
+}
 
 export function hasUsableCredential(
   provider: ProviderDescriptor,
@@ -35,6 +68,7 @@ export function buildChatModelOptions(
           ? "真实 API 可用"
           : "缺少 Key",
       isMock: provider.id === "mock",
+      capabilities: provider.models[modelId],
     }));
   });
 }

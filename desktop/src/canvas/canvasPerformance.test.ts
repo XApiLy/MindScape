@@ -24,7 +24,14 @@ function createNode(index: number): ConversationNode {
     id,
     conversationId: "conversation-benchmark",
     parentNodeId,
-    branchType: index === 0 ? "continues" : index % 3 === 0 ? "diverges" : "continues",
+    branchType:
+      index > 0 && index % 10 === 0
+        ? "importedFrom"
+        : index === 0
+          ? "continues"
+          : index % 3 === 0
+            ? "diverges"
+            : "continues",
     title: `200节点固定样本 ${index}`,
     userMessage: {
       id: `user-${id}`,
@@ -136,6 +143,7 @@ test("records a repeatable 200-node canvas computation baseline", () => {
   const result = {
     nodes: projection.nodes.length,
     edges: projection.edges.length,
+    importedNodes: projection.nodes.filter((node) => node.origin.kind === "importedSource").length,
     initialProjectionMs: Number(initialProjectionMs.toFixed(3)),
     pan5000Ms: Number(panMs.toFixed(3)),
     zoom5000Ms: Number(zoomMs.toFixed(3)),
@@ -146,10 +154,42 @@ test("records a repeatable 200-node canvas computation baseline", () => {
 
   assert.equal(result.nodes, 200);
   assert.equal(result.edges, 199);
+  assert.equal(result.importedNodes, 19);
   assert.ok(focusedEdgeCount > 0);
   assert.ok(initialProjectionMs < 250, `initial projection took ${initialProjectionMs}ms`);
   assert.ok(panMs < 250, `pan computation took ${panMs}ms`);
   assert.ok(zoomMs < 250, `zoom computation took ${zoomMs}ms`);
   assert.ok(selectionMs < 500, `selection computation took ${selectionMs}ms`);
   assert.ok(streamingMs < 2_000, `streaming projections took ${streamingMs}ms`);
+});
+
+test("keeps 200 Markdown nodes on the bounded canvas-preview path", () => {
+  const graph = createGraph();
+  const markdown = [
+    "## 验收说明",
+    "> 原始 Markdown 只进入聚焦阅读器。",
+    "- [x] 画布保留轻量摘要",
+    "- [ ] 统一 Release 待验收",
+    "[来源](https://example.com/source)",
+    "```ts",
+    "const safe = true;",
+    "```",
+  ].join("\n");
+
+  for (const node of graph.nodes) {
+    node.assistantMessage = {
+      ...node.assistantMessage!,
+      contentBlocks: [{ type: "text", text: markdown.repeat(24) }],
+    };
+  }
+
+  let projection = projectConversationGraph(graph);
+  const projectionMs = elapsed(() => {
+    projection = projectConversationGraph(graph);
+  });
+
+  assert.equal(projection.nodes.length, 200);
+  assert.equal(projection.nodes.every((node) => (node.answerPreview?.length ?? 0) <= 280), true);
+  assert.equal(projection.nodes.every((node) => node.answer?.startsWith("## 验收说明")), true);
+  assert.ok(projectionMs < 500, `200 Markdown-node projection took ${projectionMs}ms`);
 });

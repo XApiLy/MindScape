@@ -12,6 +12,8 @@ pub struct LocalDataPaths {
     pub database: PathBuf,
     pub imports: PathBuf,
     pub backups: PathBuf,
+    pub vault: PathBuf,
+    pub models: PathBuf,
 }
 
 impl LocalDataPaths {
@@ -21,6 +23,8 @@ impl LocalDataPaths {
             database: root.join("mindscape.sqlite3"),
             imports: root.join("imports"),
             backups: root.join("backups"),
+            vault: root.join("vault"),
+            models: root.join("models"),
             root,
         }
     }
@@ -29,6 +33,8 @@ impl LocalDataPaths {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.imports)?;
         std::fs::create_dir_all(&self.backups)?;
+        std::fs::create_dir_all(&self.vault)?;
+        std::fs::create_dir_all(&self.models)?;
         Ok(())
     }
 }
@@ -49,6 +55,7 @@ mod tests {
         assert!(paths.root.is_dir());
         assert!(paths.imports.is_dir());
         assert!(paths.backups.is_dir());
+        assert!(paths.models.is_dir());
         assert_eq!(paths.database, paths.root.join("mindscape.sqlite3"));
     }
 }

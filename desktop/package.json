@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test:canvas": "node --test --experimental-strip-types src/canvas/graphProjection.test.ts src/canvas/canvasViewport.test.ts src/canvas/canvasViewportPersistence.test.ts",
+    "test:canvas": "node --test --experimental-strip-types src/canvas/graphProjection.test.ts src/canvas/canvasM2Projection.test.ts src/canvas/canvasBranchNavigation.test.ts src/canvas/branchMemoryAudit.test.ts src/canvas/canvasViewport.test.ts src/canvas/canvasViewportPersistence.test.ts src/app/markdownProjectionLoader.test.ts",
     "test:canvas:perf": "node --test --experimental-strip-types src/canvas/canvasPerformance.test.ts",
-    "test:chat": "node --test --experimental-strip-types src/app/chatRunState.test.ts src/app/chatTimeline.test.ts src/app/nodeAnswerPresentation.test.ts src/app/providerCatalog.test.ts src/app/commandErrorPresentation.test.ts",
+    "test:chat": "node --test --experimental-strip-types src/app/chatRunState.test.ts src/app/chatScrollFollow.test.ts src/app/chatTimeline.test.ts src/app/contextBill.test.ts src/app/importIntake.test.ts src/app/importPreview.test.ts src/app/markdownContent.test.ts src/app/mockModelRuntime.test.ts src/app/nodeAnswerPresentation.test.ts src/app/providerCatalog.test.ts src/app/readingFonts.test.ts src/app/readingPreferences.test.ts src/app/runProfileControls.test.ts src/app/commandErrorPresentation.test.ts src/app/focusFramePresentation.test.ts src/app/focusFrameQueryLoader.test.ts src/app/focusPromotionDecision.test.ts src/app/knowledgeInventory.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -16,7 +16,9 @@
     "@tauri-apps/api": "^2.8.0",
     "lucide-react": "^1.31.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",

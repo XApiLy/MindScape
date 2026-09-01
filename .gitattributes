@@ -25,3 +25,9 @@
 *.pdf binary
 *.woff binary
 *.woff2 binary
+*.ttf binary
+*.otf binary
+
+# Preserve fixed third-party source and license text without weakening checks on owned code.
+desktop/src/assets/fonts/**/OFL.txt whitespace=-blank-at-eol
+tools/source-reference-lab/public/vendor/** whitespace=-blank-at-eol,-blank-at-eof

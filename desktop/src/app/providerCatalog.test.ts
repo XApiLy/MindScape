@@ -4,6 +4,7 @@ import type { ProviderDescriptor } from "../domain/provider.ts";
 import {
   buildChatModelOptions,
   chooseModelSelection,
+  describeModelCapabilities,
 } from "./providerCatalog.ts";
 
 const capabilities = {
@@ -13,6 +14,17 @@ const capabilities = {
   usageReporting: true,
   streaming: true,
   contextWindowTokens: null,
+  supportsReasoning: false,
+  reasoningControl: "none",
+  reasoningModes: [],
+  structuredOutput: false,
+  generationParameters: {
+    maxOutputTokens: "supported",
+    temperature: "unsupported",
+    topP: "unsupported",
+    seed: "unsupported",
+  },
+  inputModalities: ["text"],
 };
 
 const providers: ProviderDescriptor[] = [
@@ -71,5 +83,32 @@ test("falls back only when the selected model is no longer registered", () => {
       modelId: "removed-model",
     }),
     { providerId: "mock", modelId: "mock-stream-v1" },
+  );
+});
+
+test("describes provider capability snapshots without inventing unsupported controls", () => {
+  const deepseekCapabilities = {
+    ...capabilities,
+    supportsReasoning: true,
+    reasoningModes: ["high", "max"] as const,
+    structuredOutput: true,
+    generationParameters: {
+      maxOutputTokens: "supported" as const,
+      temperature: "nonReasoningOnly" as const,
+      topP: "nonReasoningOnly" as const,
+      seed: "unsupported" as const,
+    },
+  };
+  assert.deepEqual(
+    describeModelCapabilities(deepseekCapabilities).map(({ label, tone }) => ({ label, tone })),
+    [
+      { label: "思考：high / max", tone: "supported" },
+      { label: "结构化输出可用", tone: "supported" },
+      { label: "工具闭环未接入", tone: "unavailable" },
+      { label: "流式输出可用", tone: "supported" },
+      { label: "temperature（仅非思考）", tone: "limited" },
+      { label: "top_p（仅非思考）", tone: "limited" },
+      { label: "seed 未声明", tone: "unavailable" },
+    ],
   );
 });

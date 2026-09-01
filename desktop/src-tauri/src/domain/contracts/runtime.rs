@@ -99,7 +99,7 @@ pub struct ModelRunBudget {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRunRequest {
     pub contract_version: String,
@@ -111,6 +111,8 @@ pub struct ModelRunRequest {
     pub model_id: String,
     pub capabilities: Vec<CapabilityRequirement>,
     pub budget: ModelRunBudget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_run_profile: Option<EffectiveRunProfile>,
     pub idempotency_key: String,
     pub created_at: String,
 }

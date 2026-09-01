@@ -10,6 +10,12 @@
 
 本规则确保每个验收程序都有唯一版本、明确路径、来源提交、源程序编译时间、发布时间和SHA-256，避免运行错版本、旧程序占用导致重复构建目录，以及二进制污染Git仓库。
 
+## 与 Review Lab 的边界
+
+Review Lab 员工主线 `preview` 是可视进度快照，可以来自明确标注的 dirty 工作树，用来让创始人及时观察 UI、交互和状态；它不是 Windows 验收程序，也不证明原生 Provider、SQLite、凭据或恢复能力。可见 UI 切片的 preview 发布频率和员工责任以当前控制 PEC 为准。
+
+本目录发布的 Acceptance Build 是唯一正式 Tauri Release。它发布后必须在 Review Lab 形成同一 Build ID、commit、SHA-256、程序路径与验收范围的 `full` 里程碑引用，但登记动作不得再次编译或产生第二份等价 EXE。自动登记接口尚未落地时，Release PEC 必须显式报告该缺口，禁止把 Acceptance Build 已发布误写成 Review Lab 已同步。
+
 ## 2. 唯一目录结构
 
 ```text

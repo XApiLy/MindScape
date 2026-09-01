@@ -94,6 +94,13 @@ export type ImportedMessage = {
   platformExtension: unknown;
 };
 
+export type ImportBundleQueryProjection = {
+  source: ImportSource;
+  revision: ImportRevision;
+  messages: ImportedMessage[];
+  report: ParseReport;
+};
+
 export type DerivedContinuation = {
   id: string;
   importSourceId: string;

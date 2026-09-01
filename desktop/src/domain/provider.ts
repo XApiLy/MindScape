@@ -1,3 +1,15 @@
+export type ReasoningControl = "none" | "effort" | "tokenBudget" | "vendorSpecific";
+export type ProviderReasoningMode = "disabled" | "high" | "max";
+export type ParameterSupport = "unsupported" | "supported" | "nonReasoningOnly";
+export type InputModality = "text" | "image" | "file" | "audio";
+
+export type GenerationParameterCapabilities = {
+  maxOutputTokens: ParameterSupport;
+  temperature: ParameterSupport;
+  topP: ParameterSupport;
+  seed: ParameterSupport;
+};
+
 export type ModelCapabilities = {
   textInput: boolean;
   imageInput: boolean;
@@ -5,6 +17,12 @@ export type ModelCapabilities = {
   usageReporting: boolean;
   streaming: boolean;
   contextWindowTokens: number | null;
+  supportsReasoning: boolean;
+  reasoningControl: ReasoningControl;
+  reasoningModes: ProviderReasoningMode[];
+  structuredOutput: boolean;
+  generationParameters: GenerationParameterCapabilities;
+  inputModalities: InputModality[];
 };
 
 export type ProviderDescriptor = {
