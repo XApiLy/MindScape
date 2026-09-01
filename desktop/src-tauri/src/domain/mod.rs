@@ -8,6 +8,7 @@ mod focus_lifecycle;
 mod focus_promotion;
 mod focus_query;
 mod focused_context;
+mod import_knowledge_proposal;
 mod imports;
 mod knowledge;
 mod knowledge_retrieval;
@@ -52,6 +53,17 @@ pub use focus_query::{
 pub use focused_context::{
     FOCUSED_CONTEXT_CONTRACT_VERSION, FocusedContextCompileInput, FocusedContextSnapshot,
     compile_focused_context, validate_focused_context_snapshot,
+};
+pub use import_knowledge_proposal::{
+    IMPORT_KNOWLEDGE_PROPOSAL_CONTRACT_VERSION, ImportKnowledgeEntityProposal,
+    ImportKnowledgeProposalBatchProjection, ImportKnowledgeProposalError,
+    ImportKnowledgeProposalRequestInput, ImportKnowledgeProposalReviewAction,
+    ImportKnowledgeProposalReviewChoice, ImportKnowledgeProposalReviewCommandInput,
+    ImportKnowledgeProposalReviewPlan, ImportKnowledgeProposalReviewProjection,
+    ImportKnowledgeProposalTargetContext, ImportKnowledgeSourceSnapshot,
+    ImportKnowledgeSuggestionDraft, plan_import_knowledge_proposal_review,
+    plan_import_knowledge_proposals, validate_import_knowledge_proposal_request_replay,
+    validate_import_knowledge_proposal_review_replay,
 };
 pub use imports::{ImportBundleValidationError, validate_import_bundle};
 pub use knowledge::{

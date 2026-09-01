@@ -79,6 +79,20 @@
 - 未知内容继续使用 V1 `Unsupported` ContentBlock 和原始 JSON 保存；ParseReport 必须报告恢复程度和警告。
 - `validate_import_bundle` 是命令/存储层共用的纯领域预检：校验 source/revision/report 引用、消息 revision、消息 ID、source locator、父消息图和 ParseReport message count；失败不得提交半个 bundle。
 
+### 5.1 2026-09-01 冻结：导入原文 → 实体建议 → 用户确认
+
+`mindscape.import-knowledge-proposal.v1` 补齐 B2/B5 在正式回流之前缺失的知识入口。`ImportGraphProjection.analysisPolicy` 继续固定为 `disabled`：文件导入、拖放或粘贴只保存原文，绝不自动调用模型；用户必须在导入详情中显式发起独立提案请求。
+
+1. 用户请求只提交稳定 `requestId`、ImportSource/Revision ID、预期原文 hash、显式选择的 ImportedMessage ID、目标 scope 和时间。首版目标只允许同 conversation 或同 conversation 的 Active FocusFrame；Workspace/Project 自动扩散禁止。
+2. Kernel 必须从 SQLite 加载同一 ImportSource、状态为 Parsed 的不可变 revision、完整 ImportedMessage 和原文 hash，为每个选择生成权威 source snapshot。模型或确定性规则只能看到稳定 message ID 和内容，只能返回 ordinal、建议 kind/name/aliases 及其引用的 message ID；不能生成 proposal/evidence/entity ID、scope、status、revision、generator 或时间。用户不能借此命令绕过审核手工伪造 suggestion。
+3. 纯领域计划拒绝过期 hash、跨 conversation/scope、未选/不存在/重复来源、无 EvidenceRef、重复 ordinal、空白或超限文本和超过 64 条的批次。Kernel 将已核验 message ID 解析为 `EvidenceTarget::ImportContent`，写入 source/revision/locator、内容 hash 和 excerpt，形成不可变 proposal batch。
+4. `ImportKnowledgeEntityProposal` 在用户决定前不是 `KnowledgeEntity`，不得写 FTS/VectorIndex、Markdown Vault、Context Compiler 或 `promoteRefs`；界面必须同时展示建议字段和来源，不得把模型建议标成已确认事实。
+5. 用户 review 只有 Confirm / Reject。Confirm 可以修订 kind/name/aliases，但不能替换 EvidenceRef 或 scope；Kernel 分配 entity ID。Conversation scope 的确认原子创建 `status=confirmed/revision=1/generator=user` 的 KnowledgeEntity；Active FocusFrame scope 的确认原子创建 `status=candidate/revision=1/generator=user` 的 branch-local KnowledgeEntity，使其能够进入既有 `promoteRefs` 选择、Close 与四动作，不能提前冒充主线事实。`inferred` 不由本用户确认命令生成。Reject 只写不可变 receipt，不创建实体、Vault 或索引。
+6. `requestId` 和 `decisionId` 分别是提案与审核幂等键。相同 ID 同 typed input 返回原 projection；复用 ID 改变来源、scope、选择、审核内容或时间属于 integrity conflict。请求 receipt 必须在模型/规则运行前持久化并与稳定 `generationRunId` 绑定；崩溃恢复不能悄悄再次计费或生成另一批建议。Confirm 必须把 review receipt、KnowledgeEntity、EvidenceRef、Vault 投影和索引放进同一原子提交。
+7. 被确认的 conversation KnowledgeEntity 可进入主线检索；FocusFrame proposal 只产生 branch-local candidate，保持分支隔离且不能注入 Context Compiler。只有独立的正式候选生成命令把同 FocusFrame 的 candidate/inferred 实体放入 `promoteRefs`；导入提案确认不得绕过 FocusFrame 回流规则。
+
+预留 typed Tauri 边界为 `request_import_knowledge_proposals`、`get_import_knowledge_proposal_batch`、`review_import_knowledge_proposal` 和 `list_import_knowledge_proposal_reviews`。员工02负责 receipt/实体/EvidenceRef/Vault/索引的原子持久化与恢复；员工05负责受 EffectiveRunProfile 约束的结构化提案 Provider，不得让 Provider 直接写知识；员工03/04负责显式选择、来源预览、Confirm/Reject 和 pending/failed/retry/restart 投影；员工05最终在同一 clean Release 中从真实导入原文生成建议并确认实体，再继续 FocusFrame/B5 后半段。
+
 ## 6. 跨团队消费规则
 
 - 员工02：消费本契约设计 schema/事务；不得反向以表结构改变领域状态或原文事实。
