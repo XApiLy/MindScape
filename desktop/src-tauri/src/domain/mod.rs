@@ -33,6 +33,7 @@ pub use focus_candidate_generation::{
     FocusPromotionCandidateGenerationError, FocusPromotionCandidateGenerationPlan,
     FocusPromotionCandidateGenerationProjection, FocusPromotionCandidateSourceRevision,
     plan_focus_promotion_candidate_generation,
+    validate_focus_promotion_candidate_generation_replay,
 };
 pub use focus_lifecycle::{
     FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleCommandInput,

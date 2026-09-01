@@ -43,8 +43,9 @@
 4. 可选实体必须是同一 conversation、同一 FocusFrame scope 的 `candidate` 或 `inferred`，并至少带一条合法 EvidenceRef。这里“由内核确认”指实体存在性和 revision 已核验，不代表允许 `status=confirmed`；confirmed/rejected/superseded/stale 均不能再次进入候选生成。
 5. 选择必须由有效 `GeneratorKind::User` 发起。纯领域计划对 candidateRefs 按稳定 ID 排序，冻结每个实体 revision，同时将 FocusFrame `memoryVersion` 和 lifecycle `revision` 各递增一次；旧版本、无变化选择和版本溢出显式失败。
 6. 生成后 FocusFrame 仍保持 Active，候选不可用于四动作。用户显式 Close 后，既有 `FocusFrameLifecycleSnapshot::promotion_candidates()` 才把相同 `promoteRefs` 暴露为只读候选集合；Confirm / Promote / Reject / Delete 继续复用现有决策契约。
+7. `generationId` 是不可变幂等键。SQLite 必须先于读取可变 FocusFrame 状态查询 generation receipt：相同 ID、相同 typed command（`candidateRefs` 作为集合比较，顺序不敏感）直接返回原 projection，不得再次增版；相同 ID 但 FocusFrame、期望版本、候选集合或时间不同，返回 integrity conflict。receipt、更新后的 FocusFrame JSON、memory version 与 lifecycle revision 必须在同一 `IMMEDIATE` 事务提交；任一实体加载、校验、乐观更新或 receipt 写入失败均整体回滚。
 
-员工02负责把生成计划、FocusFrame JSON、memory version、lifecycle revision 和 generation receipt 放入同一 SQLite 乐观事务；员工03/04只消费 Kernel 返回的可选实体并发送 typed command，不在 React 侧过滤作用域/状态或自增版本；员工05在新 clean Release 中验证“生成时 Active 隐藏 → Close 后出现 → 四动作 → Reopen 隐藏 → 再 Close 保持已处理过滤”。
+员工02负责以 schema v17（或其最终评审确认的下一连续版本）新增 generation receipt，并把生成计划、FocusFrame JSON、memory version、lifecycle revision 和 receipt 放入同一 SQLite 乐观事务；读取 receipt 时必须复核 projection 与 immutable request 一致。员工03/04只消费 Kernel 返回的可选实体并发送 typed command，不在 React 侧自增版本；前端可做展示集合交集，但 Kernel 仍是作用域、状态、EvidenceRef 和 revision 的唯一裁决者。员工05在新 clean Release 中验证“生成时 Active 隐藏 → Close 后出现 → 四动作 → Reopen 隐藏 → 再 Close 保持已处理过滤”，并至少覆盖一次成功响应丢失后的同 `generationId` 重试，证明未发生二次增版。
 
 上下文策略固定为：继续当前问题、聚焦新问题、从节点分支、原样续接。`compile_focused_context` 的第一版规则为：
 

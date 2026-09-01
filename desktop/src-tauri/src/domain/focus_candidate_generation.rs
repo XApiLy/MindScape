@@ -101,12 +101,42 @@ pub enum FocusPromotionCandidateGenerationError {
     MissingEvidence { candidate_ref: String },
     #[error("focus promotion candidate selection is unchanged")]
     UnchangedSelection,
+    #[error("focus promotion generation id was reused with a different command")]
+    GenerationIdConflict,
     #[error("focus memory version overflowed")]
     MemoryVersionOverflow,
     #[error("focus lifecycle revision overflowed")]
     LifecycleRevisionOverflow,
     #[error("generated focus lifecycle is invalid: {reason}")]
     InvalidGeneratedLifecycle { reason: String },
+}
+
+/// Validates the idempotency boundary before mutable FocusFrame state is read.
+///
+/// Candidate references are a set in this contract, so array order does not
+/// distinguish two otherwise identical retries. Every other command field is
+/// immutable once a `generationId` has been persisted.
+pub fn validate_focus_promotion_candidate_generation_replay(
+    requested: &FocusPromotionCandidateGenerationCommandInput,
+    persisted: &FocusPromotionCandidateGenerationCommandInput,
+) -> Result<(), FocusPromotionCandidateGenerationError> {
+    validate_command(requested)?;
+    validate_command(persisted)?;
+
+    let mut requested_refs = requested.candidate_refs.clone();
+    requested_refs.sort_unstable();
+    let mut persisted_refs = persisted.candidate_refs.clone();
+    persisted_refs.sort_unstable();
+    let matches = requested.generation_id == persisted.generation_id
+        && requested.focus_frame_id == persisted.focus_frame_id
+        && requested.expected_memory_version == persisted.expected_memory_version
+        && requested.expected_lifecycle_revision == persisted.expected_lifecycle_revision
+        && requested.generated_at == persisted.generated_at
+        && requested_refs == persisted_refs;
+    if !matches {
+        return Err(FocusPromotionCandidateGenerationError::GenerationIdConflict);
+    }
+    Ok(())
 }
 
 /// Builds the only valid mutation plan for turning an explicit user selection
@@ -580,5 +610,26 @@ mod tests {
         assert_eq!(value["expectedMemoryVersion"], 3);
         assert_eq!(value["expectedLifecycleRevision"], 2);
         assert_eq!(value["candidateRefs"][0], "entity-1");
+    }
+
+    #[test]
+    fn generation_replay_accepts_the_same_candidate_set_in_any_order() {
+        let requested = command(vec!["entity-b".into(), "entity-a".into()]);
+        let persisted = command(vec!["entity-a".into(), "entity-b".into()]);
+
+        validate_focus_promotion_candidate_generation_replay(&requested, &persisted)
+            .expect("same semantic command must replay");
+    }
+
+    #[test]
+    fn generation_replay_rejects_reused_id_with_changed_input() {
+        let requested = command(vec!["entity-a".into()]);
+        let mut persisted = requested.clone();
+        persisted.expected_lifecycle_revision += 1;
+
+        assert_eq!(
+            validate_focus_promotion_candidate_generation_replay(&requested, &persisted),
+            Err(FocusPromotionCandidateGenerationError::GenerationIdConflict)
+        );
     }
 }
