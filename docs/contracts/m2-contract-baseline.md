@@ -33,6 +33,19 @@
 
 `FocusFrame::promotion_candidates()` 只为任务、探索和复盘分支构造不可变候选集合，冻结来源 FocusFrame、会话、分支类型和 memory version；`FocusFrameLifecycleSnapshot::promotion_candidates()` 是正式查询门禁，仅 Closed 分支可返回集合，Active、主线或空声明统一返回 `null`。重新打开分支后正式候选再次隐藏。该集合不是确认命令，也不会直接修改主线或项目知识；员工03/04只能展示候选，用户确认后才允许由知识状态机创建新版本实体和关系。
 
+### 3.1 2026-09-01 冻结：正式候选生成契约
+
+`mindscape.focus-promotion-generation.v1` 冻结首个正式 `promoteRefs` 入口，命令名预留为 `generate_focus_promotion_candidates`。该入口不是在创建 FocusFrame 时由前端填写裸 ID，也不是测试夹具或 SQLite 手工写入：
+
+1. 仅 `Active` 的 Task / Exploration / Retrospective FocusFrame 可执行；Mainline 和 Closed 均拒绝。
+2. 用户显式提交 `generationId`、`focusFrameId`、`expectedMemoryVersion`、`expectedLifecycleRevision`、非空 `candidateRefs` 和 `generatedAt`。引用必须去空白且唯一。
+3. Kernel 必须按 ID 从权威存储加载完整 `KnowledgeEntity`；传入不存在、未选择或重复实体均失败，前端不能凭字符串制造候选。
+4. 可选实体必须是同一 conversation、同一 FocusFrame scope 的 `candidate` 或 `inferred`，并至少带一条合法 EvidenceRef。这里“由内核确认”指实体存在性和 revision 已核验，不代表允许 `status=confirmed`；confirmed/rejected/superseded/stale 均不能再次进入候选生成。
+5. 选择必须由有效 `GeneratorKind::User` 发起。纯领域计划对 candidateRefs 按稳定 ID 排序，冻结每个实体 revision，同时将 FocusFrame `memoryVersion` 和 lifecycle `revision` 各递增一次；旧版本、无变化选择和版本溢出显式失败。
+6. 生成后 FocusFrame 仍保持 Active，候选不可用于四动作。用户显式 Close 后，既有 `FocusFrameLifecycleSnapshot::promotion_candidates()` 才把相同 `promoteRefs` 暴露为只读候选集合；Confirm / Promote / Reject / Delete 继续复用现有决策契约。
+
+员工02负责把生成计划、FocusFrame JSON、memory version、lifecycle revision 和 generation receipt 放入同一 SQLite 乐观事务；员工03/04只消费 Kernel 返回的可选实体并发送 typed command，不在 React 侧过滤作用域/状态或自增版本；员工05在新 clean Release 中验证“生成时 Active 隐藏 → Close 后出现 → 四动作 → Reopen 隐藏 → 再 Close 保持已处理过滤”。
+
 上下文策略固定为：继续当前问题、聚焦新问题、从节点分支、原样续接。`compile_focused_context` 的第一版规则为：
 
 1. FocusFrame 与 ContextCompileInput 必须属于同一会话和同一父节点。

@@ -42,6 +42,40 @@ export type FocusPromotionCandidateSet = {
   candidateRefs: string[];
 };
 
+/** User selection sent before closing an active non-mainline FocusFrame. */
+export type FocusPromotionCandidateGenerationCommandInput = {
+  generationId: string;
+  focusFrameId: string;
+  expectedMemoryVersion: number;
+  expectedLifecycleRevision: number;
+  candidateRefs: string[];
+  generatedAt: string;
+};
+
+export type FocusPromotionCandidateSourceRevision = {
+  candidateRef: string;
+  entityRevision: number;
+};
+
+/** Kernel-authored receipt; candidate IDs are verified against stored entities. */
+export type FocusPromotionCandidateGenerationProjection = {
+  contractVersion: "mindscape.focus-promotion-generation.v1";
+  generationId: string;
+  focusFrameId: string;
+  conversationId: string;
+  branchKind: Exclude<FocusBranchKind, "mainline">;
+  candidateRefs: string[];
+  sourceEntityRevisions: FocusPromotionCandidateSourceRevision[];
+  memoryVersion: number;
+  lifecycleRevision: number;
+  selectedBy: {
+    kind: "user";
+    generatorId: string;
+    generatorVersion: string;
+  };
+  generatedAt: string;
+};
+
 export type FocusPromotionDecisionAction = "confirm" | "promote" | "reject" | "delete";
 
 export type FocusPromotionTargetScope =

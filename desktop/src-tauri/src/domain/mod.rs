@@ -3,6 +3,7 @@ mod context;
 mod conversation;
 mod credentials;
 mod error;
+mod focus_candidate_generation;
 mod focus_lifecycle;
 mod focus_promotion;
 mod focus_query;
@@ -27,6 +28,12 @@ pub use conversation::{
 };
 pub use credentials::{CredentialError, CredentialRef, CredentialResult, SetCredentialInput};
 pub use error::{KernelError, KernelResult};
+pub use focus_candidate_generation::{
+    FOCUS_PROMOTION_GENERATION_CONTRACT_VERSION, FocusPromotionCandidateGenerationCommandInput,
+    FocusPromotionCandidateGenerationError, FocusPromotionCandidateGenerationPlan,
+    FocusPromotionCandidateGenerationProjection, FocusPromotionCandidateSourceRevision,
+    plan_focus_promotion_candidate_generation,
+};
 pub use focus_lifecycle::{
     FOCUS_LIFECYCLE_CONTRACT_VERSION, FocusFrameLifecycleAction, FocusFrameLifecycleCommandInput,
     FocusFrameLifecycleError, FocusFrameLifecycleSnapshot, FocusFrameLifecycleStatus,
