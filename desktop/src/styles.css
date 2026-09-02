@@ -1889,6 +1889,17 @@ button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+.import-proposal-step-note {
+  margin: 0 12px 10px;
+  padding: 9px 10px;
+  color: #e4c98f;
+  background: rgba(203, 168, 106, 0.07);
+  border: 1px solid rgba(203, 168, 106, 0.2);
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
 .import-preview-recovery {
   border-bottom: 1px solid var(--line);
 }

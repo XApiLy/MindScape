@@ -654,6 +654,12 @@ function ImportBundlePreview({
       ) : null}
 
       {previewMode === "source" ? (
+        <p className="import-proposal-step-note">
+          下一步：先切换到“安全渲染”或“Markdown 原文”，勾选下方消息后，才能生成知识建议。
+        </p>
+      ) : null}
+
+      {previewMode === "source" ? (
         <RawImportSourcePreview state={rawContentState} onRetry={onRetryRawContent} />
       ) : visibleMessages.length ? (
         <div className="import-preview-messages">
@@ -756,7 +762,6 @@ export function ImportIntakeDialog({
     if (!onLoadImportBundle || bundleLoadingSourceId) return;
     setBundleLoadingSourceId(sourceId);
     setBundleError(null);
-    setBundleResult(null);
     setRawContentState(onLoadRawImportContent ? { kind: "loading" } : { kind: "unavailable" });
     try {
       const [bundle, nextRawContentState] = await Promise.all([
