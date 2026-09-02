@@ -1406,8 +1406,8 @@ button:disabled {
 .import-dialog {
   display: flex;
   width: min(760px, 100%);
-  height: min(920px, calc(100dvh - 24px));
-  max-height: calc(100dvh - 24px);
+  height: min(920px, calc(100vh - 24px));
+  max-height: calc(100vh - 24px);
   overflow: hidden;
   flex-direction: column;
   background: var(--panel-raised);
@@ -1420,8 +1420,10 @@ button:disabled {
   display: grid;
   flex: 1 1 auto;
   min-height: 0;
+  align-content: start;
   padding: 14px 18px;
   gap: 10px;
+  grid-auto-rows: max-content;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -2497,18 +2499,27 @@ button:disabled {
 .modal-backdrop {
   position: fixed;
   z-index: 100;
-  display: grid;
+  display: flex;
   padding: 12px;
   background: rgba(0, 0, 0, 0.76);
   inset: 0;
-  place-items: center;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
   backdrop-filter: blur(6px);
+}
+
+@supports (height: 100dvh) {
+  .import-dialog {
+    height: min(920px, calc(100dvh - 24px));
+    max-height: calc(100dvh - 24px);
+  }
 }
 
 @media (max-height: 760px) {
   .import-dialog {
-    height: calc(100dvh - 16px);
-    max-height: calc(100dvh - 16px);
+    height: calc(100vh - 16px);
+    max-height: calc(100vh - 16px);
   }
 
   .import-content {
@@ -2529,6 +2540,15 @@ button:disabled {
   .import-dropzone {
     min-height: 104px;
     padding-block: 12px;
+  }
+}
+
+@supports (height: 100dvh) {
+  @media (max-height: 760px) {
+    .import-dialog {
+      height: calc(100dvh - 16px);
+      max-height: calc(100dvh - 16px);
+    }
   }
 }
 
