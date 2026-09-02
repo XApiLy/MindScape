@@ -87,6 +87,14 @@ struct KnowledgeDeleteVaultJournal {
     entries: Vec<FocusPromotionVaultJournalEntry>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportKnowledgeReviewVaultJournal {
+    decision_id: String,
+    entity_id: String,
+    entries: Vec<FocusPromotionVaultJournalEntry>,
+}
+
 impl MarkdownVault {
     pub fn new(root: impl AsRef<Path>) -> KernelResult<Self> {
         let root = root.as_ref().to_path_buf();
@@ -98,6 +106,7 @@ impl MarkdownVault {
             ".transactions",
             ".discussion-transactions",
             ".entity-delete-transactions",
+            ".import-knowledge-review-transactions",
         ] {
             fs::create_dir_all(root.join(relative))?;
         }
@@ -319,6 +328,110 @@ impl MarkdownVault {
     }
 
     pub fn commit_focus_promotion(&self, backup: MarkdownVaultMutationBackup) -> KernelResult<()> {
+        self.commit_mutation(backup)
+    }
+
+    pub fn apply_import_knowledge_proposal_review(
+        &self,
+        decision_id: &str,
+        entity: &KnowledgeEntity,
+        final_entities: &[KnowledgeEntity],
+        relations: &[KnowledgeRelation],
+    ) -> KernelResult<MarkdownVaultMutationBackup> {
+        validate_stable_id(decision_id)?;
+        validate_stable_id(&entity.id)?;
+        entity.validate()?;
+        let mut paths = vec![
+            self.root.join("entities").join(format!("{}.md", entity.id)),
+            self.root.join("indexes/entities.md"),
+        ];
+        for evidence in &entity.evidence {
+            validate_stable_id(&evidence.evidence.id)?;
+            paths.push(
+                self.root
+                    .join("sources")
+                    .join(format!("{}.md", evidence.evidence.id)),
+            );
+        }
+        paths.sort();
+        paths.dedup();
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let content = path.is_file().then(|| fs::read(&path)).transpose()?;
+                Ok((path, content))
+            })
+            .collect::<KernelResult<Vec<_>>>()?;
+        let journal_key = format!("{:x}", Sha256::digest(decision_id.as_bytes()));
+        let journal_dir = self
+            .root
+            .join(".import-knowledge-review-transactions")
+            .join(journal_key);
+        if journal_dir.exists() {
+            return Err(KernelError::Integrity(format!(
+                "Vault transaction for import knowledge review {decision_id} is already pending"
+            )));
+        }
+        fs::create_dir(&journal_dir)?;
+        let journal = ImportKnowledgeReviewVaultJournal {
+            decision_id: decision_id.into(),
+            entity_id: entity.id.clone(),
+            entries: files
+                .iter()
+                .enumerate()
+                .map(|(index, (path, content))| {
+                    let relative_path = path
+                        .strip_prefix(&self.root)
+                        .map_err(|_| {
+                            KernelError::Integrity(
+                                "import knowledge review transaction path escaped the Vault root"
+                                    .into(),
+                            )
+                        })?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let backup_file = content.as_ref().map(|_| format!("{index}.bak"));
+                    if let (Some(content), Some(backup_file)) = (content, backup_file.as_ref()) {
+                        write_new_synced(&journal_dir.join(backup_file), content)?;
+                    }
+                    Ok(FocusPromotionVaultJournalEntry {
+                        relative_path,
+                        backup_file,
+                    })
+                })
+                .collect::<KernelResult<Vec<_>>>()?,
+        };
+        write_new_synced(
+            &journal_dir.join("manifest.json"),
+            &serde_json::to_vec(&journal)?,
+        )?;
+        let backup = MarkdownVaultMutationBackup { files, journal_dir };
+        let result = (|| {
+            self.write_entity_with_relations(entity, relations)?;
+            self.write_entity_index(final_entities)
+        })();
+        match result {
+            Ok(()) => Ok(backup),
+            Err(error) => match self.rollback_mutation(backup) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(KernelError::Integrity(format!(
+                    "import knowledge review Vault projection failed ({error}); rollback also failed ({rollback_error})"
+                ))),
+            },
+        }
+    }
+
+    pub fn rollback_import_knowledge_proposal_review(
+        &self,
+        backup: MarkdownVaultMutationBackup,
+    ) -> KernelResult<()> {
+        self.rollback_mutation(backup)
+    }
+
+    pub fn commit_import_knowledge_proposal_review(
+        &self,
+        backup: MarkdownVaultMutationBackup,
+    ) -> KernelResult<()> {
         self.commit_mutation(backup)
     }
 
@@ -679,6 +792,39 @@ impl MarkdownVault {
             }
             restore_journal_entries(&self.root, &journal_dir, journal.entries)?;
             fs::remove_dir_all(journal_dir)?;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
+    pub fn recover_import_knowledge_review_transactions(
+        &self,
+        committed_decision_ids: &HashSet<String>,
+    ) -> KernelResult<u64> {
+        let transactions = self.root.join(".import-knowledge-review-transactions");
+        let mut recovered = 0;
+        for entry in fs::read_dir(&transactions)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let journal_dir = entry.path();
+            let manifest_path = journal_dir.join("manifest.json");
+            if !manifest_path.is_file() {
+                fs::remove_dir_all(journal_dir)?;
+                recovered += 1;
+                continue;
+            }
+            let journal: ImportKnowledgeReviewVaultJournal =
+                serde_json::from_slice(&fs::read(manifest_path)?)?;
+            validate_stable_id(&journal.decision_id)?;
+            validate_stable_id(&journal.entity_id)?;
+            if committed_decision_ids.contains(&journal.decision_id) {
+                fs::remove_dir_all(journal_dir)?;
+            } else {
+                restore_journal_entries(&self.root, &journal_dir, journal.entries)?;
+                fs::remove_dir_all(journal_dir)?;
+            }
             recovered += 1;
         }
         Ok(recovered)
@@ -1498,6 +1644,78 @@ mod tests {
         assert_eq!(vault.recover_interrupted_writes().expect("recover"), 1);
         assert!(destination.is_file());
         assert!(!previous.exists());
+    }
+
+    #[test]
+    fn import_knowledge_review_journal_restores_uncommitted_and_keeps_committed_entity() {
+        let directory = TempDir::new().expect("temp directory");
+        let vault = MarkdownVault::new(directory.path()).expect("vault");
+        let mut proposed = entity("entity-import-review");
+        proposed.name = "Confirmed import review".into();
+        proposed.evidence = vec![ScopedEvidenceRef {
+            id: "scoped-import-review".into(),
+            evidence: evidence(),
+            scope: proposed.scope.clone(),
+            status: KnowledgeStatus::Confirmed,
+            revision: 1,
+            generator: proposed.generator.clone(),
+        }];
+        let entity_path = directory.path().join("entities/entity-import-review.md");
+        let source_path = directory.path().join("sources/evidence-1.md");
+
+        let pending = vault
+            .apply_import_knowledge_proposal_review(
+                "decision-import-review",
+                &proposed,
+                std::slice::from_ref(&proposed),
+                &[],
+            )
+            .expect("apply pending review");
+        drop(pending);
+        assert!(entity_path.is_file());
+        assert!(source_path.is_file());
+        assert_eq!(
+            vault
+                .recover_import_knowledge_review_transactions(&HashSet::new())
+                .expect("rollback pending review"),
+            1
+        );
+        assert!(!entity_path.exists());
+        assert!(!source_path.exists());
+
+        let pending = vault
+            .apply_import_knowledge_proposal_review(
+                "decision-import-review",
+                &proposed,
+                std::slice::from_ref(&proposed),
+                &[],
+            )
+            .expect("apply committed review");
+        drop(pending);
+        assert_eq!(
+            vault
+                .recover_import_knowledge_review_transactions(&HashSet::from([String::from(
+                    "decision-import-review",
+                )]))
+                .expect("finish committed review"),
+            1
+        );
+        assert!(
+            fs::read_to_string(entity_path)
+                .expect("committed entity")
+                .contains("# Confirmed import review")
+        );
+        assert!(source_path.is_file());
+        assert_eq!(
+            fs::read_dir(
+                directory
+                    .path()
+                    .join(".import-knowledge-review-transactions")
+            )
+            .expect("review transactions")
+            .count(),
+            0
+        );
     }
 
     #[test]

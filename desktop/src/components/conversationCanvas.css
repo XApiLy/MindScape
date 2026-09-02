@@ -1052,6 +1052,106 @@
   font-size: 9px;
 }
 
+.canvas-reader-promotion-selector {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(8, 9, 11, 0.32);
+  border: 1px solid rgba(203, 168, 106, 0.14);
+  border-radius: 8px;
+}
+
+.canvas-reader-promotion-selector-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.canvas-reader-promotion-selector-title strong {
+  color: #ded7ca;
+  font-size: 10px;
+}
+
+.canvas-reader-promotion-selector-title span,
+.canvas-reader-promotion-selector > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.canvas-reader-promotion-selector ul {
+  display: grid;
+  max-height: 168px;
+  margin: 0;
+  padding: 0;
+  gap: 5px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.canvas-reader-promotion-selector li label {
+  display: flex;
+  padding: 8px;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.canvas-reader-promotion-selector li label:has(input:checked) {
+  background: rgba(203, 168, 106, 0.085);
+  border-color: rgba(203, 168, 106, 0.28);
+}
+
+.canvas-reader-promotion-selector input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.canvas-reader-promotion-selector label > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.canvas-reader-promotion-selector label strong {
+  overflow: hidden;
+  color: #d9d1c1;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-reader-promotion-selector label small {
+  color: var(--dim);
+  font-size: 8px;
+}
+
+.canvas-reader-promotion-feedback {
+  display: grid;
+  gap: 5px;
+}
+
+.canvas-reader-promotion-feedback p {
+  margin: 0;
+}
+
+.canvas-reader-promotion-retry {
+  width: fit-content;
+  padding: 0;
+  color: #d8bc83;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 9px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .canvas-reader-focus-field {
   display: grid;
   gap: 5px;
@@ -1388,6 +1488,8 @@
 .canvas-reader-footer button:focus-visible,
 .canvas-reader-markdown-sync:focus-visible,
 .canvas-reader-memory-group summary:focus-visible,
+.canvas-reader-promotion-selector input:focus-visible,
+.canvas-reader-promotion-retry:focus-visible,
 .canvas-reader-focus-action:focus-visible {
   outline: 2px solid var(--signal);
   outline-offset: 2px;

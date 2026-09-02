@@ -33,6 +33,8 @@ import type {
   ConversationGraph,
   ConversationNode,
   FocusPromotionCandidateSet,
+  FocusPromotionCandidateGenerationCommandInput,
+  FocusPromotionCandidateGenerationProjection,
   FocusPromotionDecisionAction,
   FocusPromotionDecisionCommandInput,
   FocusPromotionDecisionProjection,
@@ -69,6 +71,11 @@ import type {
 } from "../canvas/canvasM2Projection";
 import { summarizeKnowledgeInventory } from "../app/knowledgeInventory";
 import { buildFocusPromotionDecisionInput } from "../app/focusPromotionDecision";
+import {
+  isFocusPromotionSelectionChanged,
+  reconcileFocusPromotionSelection,
+  selectableFocusPromotionEntities,
+} from "../app/focusPromotionSelection";
 import { renderedMarkdownText, SafeMarkdown } from "./SafeMarkdown";
 import "./conversationCanvas.css";
 
@@ -108,6 +115,9 @@ type ConversationCanvasProps = {
     action: "close" | "reopen",
     query: CanvasFocusFrameQueryProjection,
   ) => Promise<CanvasFocusFrameQueryProjection>;
+  onGenerateFocusPromotionCandidates?: (
+    input: FocusPromotionCandidateGenerationCommandInput,
+  ) => Promise<FocusPromotionCandidateGenerationProjection>;
   onReloadFocusFrames?: () => Promise<void>;
   onLoadFocusPromotionCandidates?: (
     focusFrameId: string,
@@ -143,6 +153,12 @@ type FocusPromotionLoadState =
   | { kind: "empty" }
   | { kind: "ready"; candidateSet: FocusPromotionCandidateSet }
   | { kind: "error"; message: string };
+
+type FocusPromotionGenerationState =
+  | { kind: "idle" }
+  | { kind: "pending"; input: FocusPromotionCandidateGenerationCommandInput }
+  | { kind: "success"; projection: FocusPromotionCandidateGenerationProjection }
+  | { kind: "error"; input: FocusPromotionCandidateGenerationCommandInput; message: string };
 
 type FocusPromotionDecisionState =
   | { kind: "idle" }
@@ -686,6 +702,7 @@ function CanvasFocusReader({
   onInspectContext,
   onCreateFocusFrame,
   onTransitionFocusFrame,
+  onGenerateFocusPromotionCandidates,
   onReloadFocusFrames,
   onLoadFocusPromotionCandidates,
   onDecideFocusPromotion,
@@ -714,6 +731,9 @@ function CanvasFocusReader({
     action: "close" | "reopen",
     query: CanvasFocusFrameQueryProjection,
   ) => Promise<CanvasFocusFrameQueryProjection>;
+  onGenerateFocusPromotionCandidates?: (
+    input: FocusPromotionCandidateGenerationCommandInput,
+  ) => Promise<FocusPromotionCandidateGenerationProjection>;
   onReloadFocusFrames?: () => Promise<void>;
   onLoadFocusPromotionCandidates?: (
     focusFrameId: string,
@@ -748,6 +768,10 @@ function CanvasFocusReader({
   const [retrievalQuery, setRetrievalQuery] = useState(node.question);
   const [retrievalAction, setRetrievalAction] = useState(false);
   const [promotionReloadToken, setPromotionReloadToken] = useState(0);
+  const [selectedPromotionRefs, setSelectedPromotionRefs] = useState<string[]>([]);
+  const [promotionGenerationState, setPromotionGenerationState] = useState<FocusPromotionGenerationState>({
+    kind: "idle",
+  });
   const [promotionState, setPromotionState] = useState<FocusPromotionLoadState>({
     kind: "unavailable",
   });
@@ -762,6 +786,16 @@ function CanvasFocusReader({
   const knowledgeContext = focusFrameQuery?.focusedContext?.knowledgeContext;
   const focusFrameId = focusFrameQuery?.lifecycle.focusFrame.id ?? null;
   const focusMemoryVersion = focusFrameQuery?.lifecycle.focusFrame.memoryVersion ?? null;
+  const selectablePromotionEntities = useMemo(
+    () => selectableFocusPromotionEntities([...knowledgeEntitiesById.values()], focusFrameQuery),
+    [focusFrameQuery, knowledgeEntitiesById],
+  );
+  const selectablePromotionKey = selectablePromotionEntities.map((entity) => entity.id).join("\u0000");
+  const currentPromotionRefs = focusFrameQuery?.lifecycle.focusFrame.memoryScope.promoteRefs ?? [];
+  const promotionSelectionChanged = isFocusPromotionSelectionChanged(
+    selectedPromotionRefs,
+    currentPromotionRefs,
+  );
 
   useEffect(() => {
     dialogRef.current?.focus();
@@ -778,6 +812,15 @@ function CanvasFocusReader({
     setRetrievalQuery(node.question);
     setPromotionDecisionState({ kind: "idle" });
   }, [node.id, node.question]);
+
+  useEffect(() => {
+    const currentRefs = focusFrameQuery?.lifecycle.focusFrame.memoryScope.promoteRefs ?? [];
+    setSelectedPromotionRefs(reconcileFocusPromotionSelection(
+      currentRefs,
+      selectablePromotionEntities.map((entity) => entity.id),
+    ));
+    setPromotionGenerationState({ kind: "idle" });
+  }, [focusFrameId, focusMemoryVersion, selectablePromotionKey]);
 
   useEffect(() => {
     if (!focusFrameId || focusMemoryVersion === null || !onLoadFocusPromotionCandidates) {
@@ -903,6 +946,40 @@ function CanvasFocusReader({
       setLifecycleError(error instanceof Error ? error.message : String(error));
     } finally {
       setLifecycleAction(null);
+    }
+  };
+
+  const generateFocusPromotionCandidates = async (
+    retryInput?: FocusPromotionCandidateGenerationCommandInput,
+  ) => {
+    if (
+      !onGenerateFocusPromotionCandidates
+      || !focusFrameQuery
+      || focusFrameQuery.lifecycle.status !== "active"
+      || promotionGenerationState.kind === "pending"
+      || selectedPromotionRefs.length === 0
+      || !promotionSelectionChanged
+    ) return;
+
+    const input = retryInput ?? {
+      generationId: `focus-promotion-generation-${crypto.randomUUID()}`,
+      focusFrameId: focusFrameQuery.lifecycle.focusFrame.id,
+      expectedMemoryVersion: focusFrameQuery.lifecycle.focusFrame.memoryVersion,
+      expectedLifecycleRevision: focusFrameQuery.lifecycle.revision,
+      candidateRefs: [...selectedPromotionRefs].sort(),
+      generatedAt: new Date().toISOString(),
+    } satisfies FocusPromotionCandidateGenerationCommandInput;
+
+    setPromotionGenerationState({ kind: "pending", input });
+    try {
+      const projection = await onGenerateFocusPromotionCandidates(input);
+      setPromotionGenerationState({ kind: "success", projection });
+    } catch (error) {
+      setPromotionGenerationState({
+        kind: "error",
+        input,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -1033,10 +1110,10 @@ function CanvasFocusReader({
             UI-HANDOFF-06
             位置：画布聚焦阅读器的 FocusFrame 生命周期控制区
             用途：显式创建当前节点 FocusFrame，并消费内核返回的 active/closed revision
-            数据/IPC：onCreateFocusFrame / onTransitionFocusFrame；App 负责 typed IPC 和投影更新
-            状态：未绑定显示创建表单；active 显示关闭；closed 显示重新打开；loading/error 只在本地控制区呈现
+            数据/IPC：list_knowledge_entities 提供可见实体；generate_focus_promotion_candidates、onCreateFocusFrame、onTransitionFocusFrame 由 App 走 typed IPC 并刷新权威投影
+            状态：未绑定显示创建表单；active 显示候选空态/多选/提交/成功/失败和关闭；closed 显示重新打开及既有四动作
             交互约束：创建必须由用户确认目标；parentNodeId 只使用领域节点 ID，不从坐标推断；不执行历史内容、不接触 Key
-            可替换范围：员工06可替换布局、视觉和动效，但不可改变 lifecycle revision/status 语义
+            可替换范围：员工06可替换布局、视觉和动效，但不可改变显式用户选择、generationId 重试、EvidenceRef、memory/lifecycle version 或状态语义
           */}
           <section className="canvas-reader-focus-control" aria-label="FocusFrame 生命周期">
             <div className="canvas-reader-focus-title">
@@ -1069,6 +1146,75 @@ function CanvasFocusReader({
                   <span>revision {focusFrameQuery.lifecycle.revision}</span>
                   <span>{focusFrameQuery.lifecycle.status === "active" ? "可继续使用" : "可重新打开"}</span>
                 </div>
+                {focusFrameQuery.lifecycle.status === "active" ? (
+                  <div className="canvas-reader-promotion-selector">
+                    <div className="canvas-reader-promotion-selector-title">
+                      <strong>正式回流候选</strong>
+                      <span>已选 {selectedPromotionRefs.length} / 可选 {selectablePromotionEntities.length}</span>
+                    </div>
+                    <p>
+                      仅展示本 FocusFrame 内带来源的候选或推断知识；内核会在保存时重新校验所属分支、状态、版本与 EvidenceRef。关闭 FocusFrame 后才进入四类动作。
+                    </p>
+                    {selectablePromotionEntities.length ? (
+                      <ul aria-label="选择正式回流候选">
+                        {selectablePromotionEntities.map((entity) => (
+                          <li key={entity.id}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={selectedPromotionRefs.includes(entity.id)}
+                                disabled={!onGenerateFocusPromotionCandidates || promotionGenerationState.kind === "pending"}
+                                onChange={(event) => {
+                                  setPromotionGenerationState({ kind: "idle" });
+                                  setSelectedPromotionRefs((current) => event.target.checked
+                                    ? [...current, entity.id]
+                                    : current.filter((reference) => reference !== entity.id));
+                                }}
+                              />
+                              <span>
+                                <strong>{entity.name}</strong>
+                                <small>{entity.status} · revision {entity.revision} · {entity.evidence.length} 条来源</small>
+                              </span>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="canvas-node-muted">当前分支还没有可选择的带来源候选知识。</p>
+                    )}
+                    <button
+                      className="canvas-reader-focus-action"
+                      type="button"
+                      disabled={
+                        !onGenerateFocusPromotionCandidates
+                        || promotionGenerationState.kind === "pending"
+                        || selectedPromotionRefs.length === 0
+                        || !promotionSelectionChanged
+                      }
+                      onClick={() => void generateFocusPromotionCandidates()}
+                    >
+                      {promotionGenerationState.kind === "pending" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
+                      {promotionGenerationState.kind === "pending" ? "正在保存…" : promotionSelectionChanged ? "保存候选选择" : "候选选择已保存"}
+                    </button>
+                    {promotionGenerationState.kind === "error" ? (
+                      <div className="canvas-reader-promotion-feedback" role="alert">
+                        <p className="canvas-node-error">候选选择保存失败：{promotionGenerationState.message}</p>
+                        <button
+                          className="canvas-reader-promotion-retry"
+                          type="button"
+                          onClick={() => void generateFocusPromotionCandidates(promotionGenerationState.input)}
+                        >
+                          使用同一收据重试
+                        </button>
+                      </div>
+                    ) : null}
+                    {promotionGenerationState.kind === "success" ? (
+                      <p className="canvas-node-muted" role="status">
+                        内核已保存 {promotionGenerationState.projection.candidateRefs.length} 条候选 · memory v{promotionGenerationState.projection.memoryVersion} · lifecycle r{promotionGenerationState.projection.lifecycleRevision}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <button
                   className="canvas-reader-focus-action"
                   type="button"
@@ -1339,6 +1485,7 @@ export function ConversationCanvas({
   focusFrameQueryError,
   onCreateFocusFrame,
   onTransitionFocusFrame,
+  onGenerateFocusPromotionCandidates,
   onReloadFocusFrames,
   onLoadFocusPromotionCandidates,
   onDecideFocusPromotion,
@@ -1785,6 +1932,7 @@ export function ConversationCanvas({
           }}
           onCreateFocusFrame={onCreateFocusFrame}
           onTransitionFocusFrame={onTransitionFocusFrame}
+          onGenerateFocusPromotionCandidates={onGenerateFocusPromotionCandidates}
           onReloadFocusFrames={onReloadFocusFrames}
           onLoadFocusPromotionCandidates={onLoadFocusPromotionCandidates}
           onDecideFocusPromotion={onDecideFocusPromotion}

@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::{ContentBlock, ContextSnapshot, KernelError, KernelResult};
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 18;
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())

@@ -1,5 +1,6 @@
 mod chunking;
 mod embedding;
+mod import_knowledge;
 mod mock;
 mod openai_compatible;
 mod registry;
@@ -12,6 +13,10 @@ pub use embedding::{
     LOCAL_EMBEDDING_MODEL_VERSION, LocalHashEmbedding, LocalVectorIndex, RetrievalAvailability,
     RetrievalCandidate, RetrievalNotice, RetrievalResult, RetrievalSource, VectorIndexRestoreError,
     VectorMatch, merge_retrieval_candidates,
+};
+pub use import_knowledge::{
+    DeterministicImportKnowledgeSuggestionProducer, ImportKnowledgeSuggestionError,
+    ImportKnowledgeSuggestionProducer,
 };
 #[allow(unused_imports)]
 pub use mock::{MockProvider, MockScenario};

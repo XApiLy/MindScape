@@ -1,33 +1,40 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
+
+use sha2::{Digest, Sha256};
 
 use crate::{
     adapters::{
         SEMANTIC_MODEL_DIMENSIONS, SEMANTIC_MODEL_VERSION, SemanticEmbedding, SqliteStore,
         provider::{
-            KnowledgeVectorSnapshot, RetrievalAvailability, RetrievalProjectionError,
-            SemanticQueryEmbedding, build_knowledge_embedding_record_from_vector,
-            knowledge_search_text, retrieve_validated_knowledge,
-            retrieve_validated_knowledge_with_semantic,
+            ImportKnowledgeSuggestionProducer, KnowledgeVectorSnapshot, RetrievalAvailability,
+            RetrievalProjectionError, SemanticQueryEmbedding,
+            build_knowledge_embedding_record_from_vector, knowledge_search_text,
+            retrieve_validated_knowledge, retrieve_validated_knowledge_with_semantic,
         },
     },
     domain::{
         AppendTurnInput, CanvasViewportState, CompleteTurnInput, ContextCompileInput,
         ContextSnapshot, Conversation, ConversationGraph, ConversationNode,
         CreateConversationInput, FocusFrameLifecycleCommandInput, FocusFrameLifecycleSnapshot,
-        FocusFrameQueryProjection, FocusPromotionDecisionAction,
+        FocusFrameQueryProjection, FocusPromotionCandidateGenerationCommandInput,
+        FocusPromotionCandidateGenerationProjection, FocusPromotionDecisionAction,
         FocusPromotionDecisionCommandInput, FocusPromotionDecisionProjection,
-        FocusPromotionEntityMutation, KernelBootstrap, KernelError, KernelResult,
-        KnowledgeRetrievalProjection, SaveCanvasViewportInput, StartModelRunInput,
-        UpdateNodePositionInput, compile_context,
+        FocusPromotionEntityMutation, ImportKnowledgeProposalBatchProjection,
+        ImportKnowledgeProposalDiscoveryProjection, ImportKnowledgeProposalDiscoveryQuery,
+        ImportKnowledgeProposalRequestInput, ImportKnowledgeProposalReviewChoice,
+        ImportKnowledgeProposalReviewCommandInput, ImportKnowledgeProposalReviewProjection,
+        ImportKnowledgeProposalTargetContext, ImportKnowledgeSourceSnapshot, KernelBootstrap,
+        KernelError, KernelResult, KnowledgeRetrievalProjection, SaveCanvasViewportInput,
+        StartModelRunInput, UpdateNodePositionInput, blocks_plain_text, compile_context,
         contracts::{
             DISCUSSION_LOG_PROJECTION_CONTRACT_VERSION, DiscussionLog, DiscussionLogProjection,
             FocusFrame, FocusPromotionCandidateSet, GeneratorKind, GeneratorRef,
             ModelRunEventEnvelope, ModelRunProjection, ModelRunRequest, RUNTIME_CONTRACT_VERSION,
         },
-        new_id, now_timestamp, plan_focus_promotion_decision,
+        new_id, now_timestamp, plan_focus_promotion_decision, plan_import_knowledge_proposals,
         validate_focus_frame_query_projection,
     },
 };
@@ -108,6 +115,243 @@ impl KernelService {
             ));
         }
         self.store.get_import_bundle(source_id)
+    }
+
+    pub fn request_import_knowledge_proposals(
+        &self,
+        input: ImportKnowledgeProposalRequestInput,
+        producer: &impl ImportKnowledgeSuggestionProducer,
+    ) -> KernelResult<ImportKnowledgeProposalBatchProjection> {
+        let proposed_run_id = new_id("import-knowledge-proposal-run");
+        let reservation = self
+            .store
+            .reserve_import_knowledge_proposal_request(&input, &proposed_run_id)?;
+        if let Some(batch) = reservation.batch {
+            return Ok(batch);
+        }
+
+        let bundle = self.store.get_import_bundle(&input.import_source_id)?;
+        let messages_by_id = bundle
+            .messages
+            .iter()
+            .map(|message| (message.id.as_str(), message))
+            .collect::<HashMap<_, _>>();
+        let selected_messages = input
+            .selected_message_ids
+            .iter()
+            .map(|message_id| {
+                messages_by_id
+                    .get(message_id.as_str())
+                    .copied()
+                    .ok_or_else(|| {
+                        KernelError::Integrity(format!(
+                            "reserved import proposal source message {message_id} disappeared"
+                        ))
+                    })
+            })
+            .collect::<KernelResult<Vec<_>>>()?;
+        let producer_messages = selected_messages
+            .iter()
+            .copied()
+            .cloned()
+            .collect::<Vec<_>>();
+        let suggestions = producer
+            .produce(&producer_messages)
+            .map_err(|error| KernelError::Validation(error.to_string()))?;
+        let source_snapshots = selected_messages
+            .iter()
+            .map(|message| {
+                let text = blocks_plain_text(&message.content_blocks);
+                ImportKnowledgeSourceSnapshot {
+                    imported_message_id: message.id.clone(),
+                    import_revision_id: message.import_revision_id.clone(),
+                    source_locator: message.source_locator.clone(),
+                    content_hash: format!("sha256:{:x}", Sha256::digest(text.as_bytes())),
+                    excerpt: bounded_excerpt(&text),
+                }
+            })
+            .collect::<Vec<_>>();
+        let workspace_id = match &input.target_scope {
+            crate::domain::contracts::KnowledgeScope::Workspace { workspace_id }
+            | crate::domain::contracts::KnowledgeScope::Project { workspace_id, .. }
+            | crate::domain::contracts::KnowledgeScope::Conversation { workspace_id, .. }
+            | crate::domain::contracts::KnowledgeScope::FocusFrame { workspace_id, .. } => {
+                workspace_id.clone()
+            }
+        };
+        let active_focus_frame_id = match &input.target_scope {
+            crate::domain::contracts::KnowledgeScope::FocusFrame { focus_frame_id, .. } => {
+                Some(focus_frame_id.clone())
+            }
+            _ => None,
+        };
+        let context = ImportKnowledgeProposalTargetContext {
+            workspace_id,
+            conversation_id: bundle.source.conversation_id.clone(),
+            active_focus_frame_id,
+        };
+        let generated_at = now_timestamp();
+        let generator = producer.generator();
+        let batch = plan_import_knowledge_proposals(
+            &input,
+            &bundle.source,
+            &bundle.revision,
+            &context,
+            &source_snapshots,
+            &suggestions,
+            &reservation.generation_run_id,
+            &generator,
+            &generated_at,
+        )
+        .map_err(|error| KernelError::Validation(error.to_string()))?;
+        self.store
+            .persist_import_knowledge_proposal_batch(&input, &batch)
+    }
+
+    pub fn get_import_knowledge_proposal_batch(
+        &self,
+        request_id: &str,
+    ) -> KernelResult<ImportKnowledgeProposalBatchProjection> {
+        self.store.get_import_knowledge_proposal_batch(request_id)
+    }
+
+    pub fn discover_import_knowledge_proposals(
+        &self,
+        query: ImportKnowledgeProposalDiscoveryQuery,
+    ) -> KernelResult<ImportKnowledgeProposalDiscoveryProjection> {
+        self.store.discover_import_knowledge_proposals(&query)
+    }
+
+    pub fn review_import_knowledge_proposal(
+        &self,
+        vault: &crate::adapters::MarkdownVault,
+        input: ImportKnowledgeProposalReviewCommandInput,
+    ) -> KernelResult<ImportKnowledgeProposalReviewProjection> {
+        let _projection_guard = self.vault_projection.lock().map_err(|_| {
+            KernelError::Integrity("Markdown Vault projection lock was poisoned".into())
+        })?;
+        let reviewer = GeneratorRef {
+            kind: GeneratorKind::User,
+            generator_id: "mindscape-local-user".into(),
+            generator_version: "v1".into(),
+        };
+        if let Some(review) = self.store.replay_import_knowledge_proposal_review(&input)? {
+            if let Some(entity_id) = review.entity_id.as_deref() {
+                let entity = self
+                    .store
+                    .list_all_knowledge_entities()?
+                    .into_iter()
+                    .find(|entity| entity.id == entity_id)
+                    .ok_or_else(|| {
+                        KernelError::Integrity(format!(
+                            "persisted import knowledge review {} is missing entity {}",
+                            review.decision_id, entity_id
+                        ))
+                    })?;
+                let conversation_id = match &entity.scope {
+                    crate::domain::contracts::KnowledgeScope::Conversation {
+                        conversation_id,
+                        ..
+                    }
+                    | crate::domain::contracts::KnowledgeScope::FocusFrame {
+                        conversation_id,
+                        ..
+                    } => conversation_id,
+                    _ => {
+                        return Err(KernelError::Integrity(
+                            "import knowledge review entity has no conversation scope".into(),
+                        ));
+                    }
+                };
+                let relations = self.store.list_knowledge_relations(conversation_id)?;
+                vault.write_entity_with_relations(&entity, &relations)?;
+                vault.write_entity_index(&self.store.list_all_knowledge_entities()?)?;
+            }
+            return Ok(review);
+        }
+        let entity_id = matches!(
+            &input.choice,
+            ImportKnowledgeProposalReviewChoice::Confirm { .. }
+        )
+        .then(|| new_id("knowledge-entity"));
+        let plan = self.store.plan_import_knowledge_proposal_review(
+            &input,
+            entity_id.as_deref(),
+            &reviewer,
+        )?;
+        let Some(entity) = plan.entity.as_ref() else {
+            return self
+                .store
+                .persist_import_knowledge_proposal_review(&input, None, &reviewer);
+        };
+        let conversation_id = match &entity.scope {
+            crate::domain::contracts::KnowledgeScope::Conversation {
+                conversation_id, ..
+            }
+            | crate::domain::contracts::KnowledgeScope::FocusFrame {
+                conversation_id, ..
+            } => conversation_id,
+            _ => {
+                return Err(KernelError::Integrity(
+                    "import knowledge review entity has no conversation scope".into(),
+                ));
+            }
+        };
+        let mut final_entities = self.store.list_all_knowledge_entities()?;
+        final_entities.push(entity.clone());
+        let relations = self.store.list_knowledge_relations(conversation_id)?;
+        let vault_backup = vault.apply_import_knowledge_proposal_review(
+            &input.decision_id,
+            entity,
+            &final_entities,
+            &relations,
+        )?;
+        match self.store.persist_import_knowledge_proposal_review(
+            &input,
+            entity_id.as_deref(),
+            &reviewer,
+        ) {
+            Ok(review) => {
+                vault.commit_import_knowledge_proposal_review(vault_backup)?;
+                Ok(review)
+            }
+            Err(store_error) => {
+                match vault.rollback_import_knowledge_proposal_review(vault_backup) {
+                    Ok(()) => Err(store_error),
+                    Err(rollback_error) => Err(KernelError::Integrity(format!(
+                        "import knowledge review SQLite persistence failed ({store_error}); Vault rollback also failed ({rollback_error})"
+                    ))),
+                }
+            }
+        }
+    }
+
+    pub fn list_import_knowledge_proposal_reviews(
+        &self,
+        request_id: &str,
+    ) -> KernelResult<Vec<ImportKnowledgeProposalReviewProjection>> {
+        self.store
+            .list_import_knowledge_proposal_reviews(request_id)
+    }
+
+    pub fn list_all_import_knowledge_proposal_review_ids(
+        &self,
+    ) -> KernelResult<std::collections::HashSet<String>> {
+        Ok(self
+            .store
+            .list_all_import_knowledge_proposal_reviews()?
+            .into_iter()
+            .map(|review| review.decision_id)
+            .collect())
+    }
+
+    pub fn recover_import_knowledge_proposal_review_vault(
+        &self,
+        vault: &crate::adapters::MarkdownVault,
+    ) -> KernelResult<u64> {
+        vault.recover_import_knowledge_review_transactions(
+            &self.list_all_import_knowledge_proposal_review_ids()?,
+        )
     }
 
     pub fn create_focus_frame(
@@ -203,6 +447,19 @@ impl KernelService {
             .candidate_refs
             .retain(|candidate_ref| !decided.contains(candidate_ref));
         Ok(Some(candidates))
+    }
+
+    pub fn generate_focus_promotion_candidates(
+        &self,
+        input: FocusPromotionCandidateGenerationCommandInput,
+    ) -> KernelResult<FocusPromotionCandidateGenerationProjection> {
+        let actor = GeneratorRef {
+            kind: GeneratorKind::User,
+            generator_id: "mindscape-local-user".into(),
+            generator_version: "v1".into(),
+        };
+        self.store
+            .persist_focus_promotion_candidate_generation(&input, &actor)
     }
 
     pub fn decide_focus_promotion(
@@ -1064,9 +1321,18 @@ fn validate_idempotent_replay(
     }
 }
 
+fn bounded_excerpt(value: &str) -> String {
+    const MAX_EXCERPT_CHARS: usize = 512;
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.chars().take(MAX_EXCERPT_CHARS).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Barrier;
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use rusqlite::Connection;
     use tempfile::TempDir;
@@ -1078,8 +1344,9 @@ mod tests {
             CapabilityRequirement, DISCUSSION_LOG_CONTRACT_VERSION, DiscussionLog,
             DiscussionLogScope, EvidenceRef, EvidenceTarget, FOCUS_CONTRACT_VERSION,
             FocusBranchKind, FocusContextPolicy, FocusMemoryScope, GeneratorKind, GeneratorRef,
+            ImportPlatform, ImportRevision, ImportRevisionStatus, ImportSource, ImportedMessage,
             KNOWLEDGE_CONTRACT_VERSION, KnowledgeEntity, KnowledgeEntityKind, KnowledgeRelation,
-            KnowledgeRelationKind, KnowledgeScope, KnowledgeStatus, ModelRunBudget,
+            KnowledgeRelationKind, KnowledgeScope, KnowledgeStatus, ModelRunBudget, ParseReport,
             ScopedEvidenceRef,
         },
     };
@@ -2279,6 +2546,449 @@ mod tests {
             .expect_err("stale memory version");
         assert!(
             matches!(stale, KernelError::Integrity(message) if message.contains("memory version conflict"))
+        );
+    }
+
+    #[test]
+    fn deterministic_import_proposal_request_is_grounded_and_exactly_replayable() {
+        struct CountingProducer {
+            calls: AtomicUsize,
+        }
+
+        impl ImportKnowledgeSuggestionProducer for CountingProducer {
+            fn generator(&self) -> GeneratorRef {
+                crate::adapters::provider::DeterministicImportKnowledgeSuggestionProducer
+                    .generator()
+            }
+
+            fn produce(
+                &self,
+                messages: &[ImportedMessage],
+            ) -> Result<
+                Vec<crate::domain::ImportKnowledgeSuggestionDraft>,
+                crate::adapters::provider::ImportKnowledgeSuggestionError,
+            > {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                crate::adapters::provider::DeterministicImportKnowledgeSuggestionProducer
+                    .produce(messages)
+            }
+        }
+
+        let (_directory, service) = service();
+        let bootstrap = service.bootstrap().expect("bootstrap");
+        let conversation = service
+            .create_conversation(CreateConversationInput {
+                workspace_id: bootstrap.workspace.id.clone(),
+                title: "Import suggestion producer".into(),
+            })
+            .expect("conversation");
+        let source = ImportSource {
+            id: "import-source-suggestion-producer".into(),
+            conversation_id: conversation.id.clone(),
+            platform: ImportPlatform::Generic,
+            original_file_name: Some("producer.md".into()),
+            content_hash: "sha256:suggestion-producer-source".into(),
+            storage_ref: "aa/suggestion-producer-source".into(),
+            created_at: "2026-09-02T01:00:00Z".into(),
+        };
+        let revision = ImportRevision {
+            id: "import-revision-suggestion-producer".into(),
+            import_source_id: source.id.clone(),
+            adapter_id: "generic-markdown".into(),
+            adapter_version: "1".into(),
+            status: ImportRevisionStatus::Parsed,
+            created_at: "2026-09-02T01:00:00Z".into(),
+        };
+        let message = ImportedMessage {
+            id: "import-message-suggestion-producer".into(),
+            import_revision_id: revision.id.clone(),
+            role: crate::domain::MessageRole::Imported,
+            content_blocks: vec![crate::domain::ContentBlock::text(
+                "团队决定使用本地 SQLite 保存知识。",
+            )],
+            occurred_at: None,
+            source_locator: "$.messages[0]".into(),
+            parent_imported_message_id: None,
+            platform_extension: serde_json::json!({}),
+        };
+        service
+            .persist_import_bundle(
+                &source,
+                &revision,
+                std::slice::from_ref(&message),
+                &ParseReport {
+                    import_revision_id: revision.id.clone(),
+                    conversation_count: 1,
+                    message_count: 1,
+                    attachment_count: 0,
+                    tool_record_count: 0,
+                    field_recovery: vec![],
+                    warnings: vec![],
+                    errors: vec![],
+                },
+            )
+            .expect("persist import");
+        let input = ImportKnowledgeProposalRequestInput {
+            request_id: "proposal-request-suggestion-producer".into(),
+            import_source_id: source.id.clone(),
+            import_revision_id: revision.id.clone(),
+            expected_source_content_hash: source.content_hash,
+            selected_message_ids: vec![message.id.clone()],
+            target_scope: KnowledgeScope::Conversation {
+                workspace_id: bootstrap.workspace.id,
+                conversation_id: conversation.id,
+            },
+            requested_at: "2026-09-02T01:01:00Z".into(),
+        };
+        let producer = CountingProducer {
+            calls: AtomicUsize::new(0),
+        };
+
+        let first = service
+            .request_import_knowledge_proposals(input.clone(), &producer)
+            .expect("request proposals");
+        let replay = service
+            .request_import_knowledge_proposals(input, &producer)
+            .expect("replay proposals");
+
+        assert_eq!(replay, first);
+        assert_eq!(producer.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(first.proposals.len(), 1);
+        assert_eq!(
+            first.generator.kind,
+            crate::domain::contracts::GeneratorKind::DeterministicRule
+        );
+        assert!(matches!(
+            first.proposals[0].evidence[0].target,
+            EvidenceTarget::ImportContent { .. }
+        ));
+        assert_eq!(
+            first.proposals[0].suggested_kind,
+            KnowledgeEntityKind::Decision
+        );
+    }
+
+    #[test]
+    fn import_proposal_review_creates_a_branch_candidate_with_vault_and_restart_evidence() {
+        let (directory, service) = service();
+        let bootstrap = service.bootstrap().expect("bootstrap");
+        let conversation = service
+            .create_conversation(CreateConversationInput {
+                workspace_id: bootstrap.workspace.id.clone(),
+                title: "Import proposal review".into(),
+            })
+            .expect("conversation");
+        let source = ImportSource {
+            id: "import-source-proposal-review".into(),
+            conversation_id: conversation.id.clone(),
+            platform: ImportPlatform::Generic,
+            original_file_name: Some("review.md".into()),
+            content_hash: "sha256:proposal-review-source".into(),
+            storage_ref: "aa/proposal-review-source".into(),
+            created_at: "2026-09-01T15:00:00Z".into(),
+        };
+        let revision = ImportRevision {
+            id: "import-revision-proposal-review".into(),
+            import_source_id: source.id.clone(),
+            adapter_id: "generic-markdown".into(),
+            adapter_version: "1".into(),
+            status: ImportRevisionStatus::Parsed,
+            created_at: "2026-09-01T15:00:00Z".into(),
+        };
+        let message = ImportedMessage {
+            id: "import-message-proposal-review".into(),
+            import_revision_id: revision.id.clone(),
+            role: crate::domain::MessageRole::Imported,
+            content_blocks: vec![crate::domain::ContentBlock::text(
+                "The reviewed import stays branch-local.",
+            )],
+            occurred_at: None,
+            source_locator: "$.messages[0]".into(),
+            parent_imported_message_id: None,
+            platform_extension: serde_json::json!({}),
+        };
+        let report = ParseReport {
+            import_revision_id: revision.id.clone(),
+            conversation_count: 1,
+            message_count: 1,
+            attachment_count: 0,
+            tool_record_count: 0,
+            field_recovery: vec![],
+            warnings: vec![],
+            errors: vec![],
+        };
+        service
+            .persist_import_bundle(&source, &revision, std::slice::from_ref(&message), &report)
+            .expect("persist import");
+        let branch = focus_frame(&conversation.id);
+        service
+            .create_focus_frame(branch.clone())
+            .expect("create active branch");
+        let request = crate::domain::ImportKnowledgeProposalRequestInput {
+            request_id: "proposal-request-service".into(),
+            import_source_id: source.id.clone(),
+            import_revision_id: revision.id.clone(),
+            expected_source_content_hash: source.content_hash.clone(),
+            selected_message_ids: vec![message.id.clone()],
+            target_scope: KnowledgeScope::FocusFrame {
+                workspace_id: bootstrap.workspace.id.clone(),
+                conversation_id: conversation.id.clone(),
+                focus_frame_id: branch.id.clone(),
+            },
+            requested_at: "2026-09-01T15:01:00Z".into(),
+        };
+        let reservation = service
+            .store
+            .reserve_import_knowledge_proposal_request(
+                &request,
+                "import-knowledge-generation-service",
+            )
+            .expect("reserve request");
+        let generator = GeneratorRef {
+            kind: GeneratorKind::DeterministicRule,
+            generator_id: "proposal-rule".into(),
+            generator_version: "v1".into(),
+        };
+        let batch = crate::domain::plan_import_knowledge_proposals(
+            &request,
+            &source,
+            &revision,
+            &crate::domain::ImportKnowledgeProposalTargetContext {
+                workspace_id: bootstrap.workspace.id,
+                conversation_id: conversation.id.clone(),
+                active_focus_frame_id: Some(branch.id),
+            },
+            &[crate::domain::ImportKnowledgeSourceSnapshot {
+                imported_message_id: message.id.clone(),
+                import_revision_id: revision.id.clone(),
+                source_locator: message.source_locator,
+                content_hash: "sha256:proposal-review-message".into(),
+                excerpt: "The reviewed import stays branch-local.".into(),
+            }],
+            &[crate::domain::ImportKnowledgeSuggestionDraft {
+                ordinal: 0,
+                kind: KnowledgeEntityKind::Decision,
+                name: "Keep reviewed import branch-local".into(),
+                aliases: vec![],
+                evidence_message_ids: vec![message.id],
+            }],
+            &reservation.generation_run_id,
+            &generator,
+            "2026-09-01T15:02:00Z",
+        )
+        .expect("plan proposals");
+        service
+            .store
+            .persist_import_knowledge_proposal_batch(&request, &batch)
+            .expect("persist proposals");
+        let proposal = &batch.proposals[0];
+        let input = crate::domain::ImportKnowledgeProposalReviewCommandInput {
+            decision_id: "proposal-review-service".into(),
+            request_id: request.request_id,
+            proposal_id: proposal.proposal_id.clone(),
+            expected_proposal_revision: proposal.proposal_revision,
+            choice: crate::domain::ImportKnowledgeProposalReviewChoice::Confirm {
+                kind: proposal.suggested_kind,
+                name: proposal.suggested_name.clone(),
+                aliases: proposal.suggested_aliases.clone(),
+            },
+            decided_at: "2026-09-01T15:03:00Z".into(),
+        };
+        let vault =
+            crate::adapters::MarkdownVault::new(directory.path().join("vault")).expect("vault");
+        let review = service
+            .review_import_knowledge_proposal(&vault, input.clone())
+            .expect("confirm proposal");
+        let replay = service
+            .review_import_knowledge_proposal(&vault, input)
+            .expect("replay review");
+        let entity_id = review.entity_id.as_deref().expect("entity id");
+        let entity = service
+            .store
+            .get_knowledge_entity(&conversation.id, entity_id)
+            .expect("candidate entity");
+
+        assert_eq!(review, replay);
+        assert_eq!(entity.status, KnowledgeStatus::Candidate);
+        assert!(
+            directory
+                .path()
+                .join(format!("vault/entities/{entity_id}.md"))
+                .is_file()
+        );
+        assert!(
+            directory
+                .path()
+                .join(format!(
+                    "vault/sources/{}.md",
+                    entity.evidence[0].evidence.id
+                ))
+                .is_file()
+        );
+        assert_eq!(
+            std::fs::read_dir(
+                directory
+                    .path()
+                    .join("vault/.import-knowledge-review-transactions"),
+            )
+            .expect("review journals")
+            .count(),
+            0
+        );
+        drop(service);
+        let restored = KernelService::open(directory.path().join("mindscape.sqlite3"))
+            .expect("restart service");
+        let restored_vault = crate::adapters::MarkdownVault::new(directory.path().join("vault"))
+            .expect("restored vault");
+        assert_eq!(
+            restored
+                .recover_import_knowledge_proposal_review_vault(&restored_vault)
+                .expect("recover review journals"),
+            0
+        );
+        assert_eq!(
+            restored
+                .store
+                .get_knowledge_entity(&conversation.id, entity_id)
+                .expect("restored entity"),
+            entity
+        );
+    }
+
+    #[test]
+    fn import_backed_entity_enters_focus_promotion_with_resolved_evidence() {
+        let (directory, service) = service();
+        let bootstrap = service.bootstrap().expect("bootstrap");
+        let conversation = service
+            .create_conversation(CreateConversationInput {
+                workspace_id: bootstrap.workspace.id.clone(),
+                title: "Import-backed promotion".into(),
+            })
+            .expect("create conversation");
+        let source = ImportSource {
+            id: "import-source-promotion".into(),
+            conversation_id: conversation.id.clone(),
+            platform: ImportPlatform::Generic,
+            original_file_name: Some("verified.md".into()),
+            content_hash: "sha256:verified-source".into(),
+            storage_ref: "aa/verified-source".into(),
+            created_at: "2026-09-01T01:00:00Z".into(),
+        };
+        let revision = ImportRevision {
+            id: "import-revision-promotion".into(),
+            import_source_id: source.id.clone(),
+            adapter_id: "generic-markdown".into(),
+            adapter_version: "1".into(),
+            status: ImportRevisionStatus::Parsed,
+            created_at: "2026-09-01T01:00:00Z".into(),
+        };
+        let messages = vec![ImportedMessage {
+            id: "import-message-promotion".into(),
+            import_revision_id: revision.id.clone(),
+            role: crate::domain::MessageRole::Imported,
+            content_blocks: vec![crate::domain::ContentBlock::text(
+                "The imported decision keeps its source.",
+            )],
+            occurred_at: None,
+            source_locator: "$.messages[0]".into(),
+            parent_imported_message_id: None,
+            platform_extension: serde_json::json!({}),
+        }];
+        let report = ParseReport {
+            import_revision_id: revision.id.clone(),
+            conversation_count: 1,
+            message_count: 1,
+            attachment_count: 0,
+            tool_record_count: 0,
+            field_recovery: vec![],
+            warnings: vec![],
+            errors: vec![],
+        };
+        service
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let branch = focus_frame(&conversation.id);
+        service
+            .create_focus_frame(branch.clone())
+            .expect("create branch");
+        let mut entity = knowledge_entity(
+            &bootstrap.workspace.id,
+            &conversation.id,
+            "entity-import-promotion",
+            "Keep the imported decision",
+            KnowledgeStatus::Candidate,
+        );
+        entity.scope = KnowledgeScope::FocusFrame {
+            workspace_id: bootstrap.workspace.id,
+            conversation_id: conversation.id.clone(),
+            focus_frame_id: branch.id.clone(),
+        };
+        entity.evidence = vec![ScopedEvidenceRef {
+            id: "scoped-import-promotion".into(),
+            evidence: EvidenceRef {
+                id: "evidence-import-promotion".into(),
+                target: EvidenceTarget::ImportContent {
+                    import_source_id: source.id,
+                    import_revision_id: revision.id,
+                    locator: messages[0].source_locator.clone(),
+                },
+                content_hash: Some("sha256:verified-block".into()),
+                excerpt: Some("The imported decision keeps its source.".into()),
+                created_at: "2026-09-01T01:01:00Z".into(),
+            },
+            scope: entity.scope.clone(),
+            status: KnowledgeStatus::Candidate,
+            revision: 1,
+            generator: entity.generator.clone(),
+        }];
+        service
+            .upsert_knowledge_entity(&conversation.id, entity)
+            .expect("persist candidate and evidence");
+        let vault =
+            crate::adapters::MarkdownVault::new(directory.path().join("vault")).expect("vault");
+        service
+            .project_knowledge_entity_markdown(&vault, &conversation.id, "entity-import-promotion")
+            .expect("project candidate");
+        let generation = service
+            .generate_focus_promotion_candidates(FocusPromotionCandidateGenerationCommandInput {
+                generation_id: "generation-import-promotion".into(),
+                focus_frame_id: branch.id.clone(),
+                expected_memory_version: 1,
+                expected_lifecycle_revision: 1,
+                candidate_refs: vec!["entity-import-promotion".into()],
+                generated_at: "2026-09-01T01:02:00Z".into(),
+            })
+            .expect("generate promotion candidates");
+        service
+            .close_focus_frame(FocusFrameLifecycleCommandInput {
+                focus_frame_id: branch.id.clone(),
+                expected_revision: generation.lifecycle_revision,
+                updated_at: "2026-09-01T01:03:00Z".into(),
+            })
+            .expect("close branch");
+
+        let candidates = service
+            .get_focus_promotion_candidates(&branch.id, Some(generation.memory_version))
+            .expect("load candidates")
+            .expect("candidate set");
+        let evidence_rows: u64 = Connection::open(directory.path().join("mindscape.sqlite3"))
+            .expect("open audit connection")
+            .query_row(
+                "SELECT COUNT(*) FROM evidence_refs WHERE id = 'evidence-import-promotion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("evidence rows");
+        let source_page = std::fs::read_to_string(
+            directory
+                .path()
+                .join("vault/sources/evidence-import-promotion.md"),
+        )
+        .expect("EvidenceRef source page");
+        assert_eq!(candidates.candidate_refs, ["entity-import-promotion"]);
+        assert_eq!(evidence_rows, 1);
+        assert!(
+            source_page.contains("import://import-source-promotion/import-revision-promotion/")
         );
     }
 

@@ -18,17 +18,28 @@ use crate::{
         AppendTurnInput, BranchType, CanvasNodePosition, CanvasViewportState, CompleteTurnInput,
         ContentBlock, ContextConstraint, ContextMessageRef, ContextSnapshot, ContextTurn,
         Conversation, ConversationEdge, ConversationGraph, ConversationNode, ConversationSummary,
-        CreateConversationInput, FocusPromotionDecisionCommandInput,
+        CreateConversationInput, FocusPromotionCandidateGenerationCommandInput,
+        FocusPromotionCandidateGenerationProjection, FocusPromotionDecisionCommandInput,
         FocusPromotionDecisionProjection, FocusPromotionEntityMutation, FocusedContextSnapshot,
-        KernelError, KernelResult, Message, MessageRole, OmittedContextRef, RunState,
-        SCHEMA_VERSION, SaveCanvasViewportInput, UpdateNodePositionInput, Workspace,
-        blocks_plain_text,
+        ImportKnowledgeEntityProposal, ImportKnowledgeProposalBatchProjection,
+        ImportKnowledgeProposalDiscoveryItem, ImportKnowledgeProposalDiscoveryProjection,
+        ImportKnowledgeProposalDiscoveryQuery, ImportKnowledgeProposalRequestInput,
+        ImportKnowledgeProposalRequestState, ImportKnowledgeProposalReviewCommandInput,
+        ImportKnowledgeProposalReviewProjection, ImportKnowledgeProposalTargetContext, KernelError,
+        KernelResult, Message, MessageRole, OmittedContextRef, RunState, SCHEMA_VERSION,
+        SaveCanvasViewportInput, UpdateNodePositionInput, Workspace, blocks_plain_text,
         contracts::{
-            DiscussionLogProjection, DiscussionLogScope, EvidenceRef, KnowledgeEntity,
-            KnowledgeRelation, KnowledgeStatus, ModelRunEvent, ModelRunEventEnvelope,
-            ModelRunProjection, ModelRunRequest,
+            DiscussionLogProjection, DiscussionLogScope, EvidenceRef, EvidenceTarget,
+            ImportRevisionStatus, KnowledgeEntity, KnowledgeRelation, KnowledgeScope,
+            KnowledgeStatus, ModelRunEvent, ModelRunEventEnvelope, ModelRunProjection,
+            ModelRunRequest,
         },
-        new_id, now_timestamp, plan_focus_promotion_decision, validate_focused_context_snapshot,
+        new_id, now_timestamp, plan_focus_promotion_candidate_generation,
+        plan_focus_promotion_decision, plan_import_knowledge_proposal_review,
+        validate_focus_promotion_candidate_generation_replay, validate_focused_context_snapshot,
+        validate_import_knowledge_proposal_discovery_query,
+        validate_import_knowledge_proposal_request_replay,
+        validate_import_knowledge_proposal_review_replay,
     },
 };
 
@@ -360,6 +371,60 @@ CREATE INDEX IF NOT EXISTS idx_focus_promotion_decisions_frame
 ON focus_promotion_decisions(focus_frame_id, decided_at, decision_id);
 "#;
 
+const MIGRATION_V17: &str = r#"
+CREATE TABLE IF NOT EXISTS focus_promotion_candidate_generations (
+    generation_id TEXT PRIMARY KEY,
+    focus_frame_id TEXT NOT NULL REFERENCES focus_frame_lifecycle(focus_frame_id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    request_json TEXT NOT NULL,
+    projection_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_focus_promotion_candidate_generations_frame
+ON focus_promotion_candidate_generations(focus_frame_id, generated_at, generation_id);
+"#;
+
+const MIGRATION_V18: &str = r#"
+CREATE TABLE IF NOT EXISTS import_knowledge_proposal_requests (
+    request_id TEXT PRIMARY KEY,
+    import_source_id TEXT NOT NULL REFERENCES import_sources(id) ON DELETE CASCADE,
+    import_revision_id TEXT NOT NULL REFERENCES import_revisions(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    generation_run_id TEXT NOT NULL UNIQUE,
+    request_json TEXT NOT NULL,
+    batch_json TEXT,
+    requested_at TEXT NOT NULL,
+    generated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_import_knowledge_proposal_requests_source
+ON import_knowledge_proposal_requests(import_source_id, requested_at, request_id);
+
+CREATE TABLE IF NOT EXISTS import_knowledge_entity_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES import_knowledge_proposal_requests(request_id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    proposal_revision INTEGER NOT NULL CHECK(proposal_revision > 0),
+    proposal_json TEXT NOT NULL,
+    reviewed_decision_id TEXT UNIQUE,
+    proposed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_import_knowledge_entity_proposals_request
+ON import_knowledge_entity_proposals(request_id, proposed_at, proposal_id);
+
+CREATE TABLE IF NOT EXISTS import_knowledge_proposal_reviews (
+    decision_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES import_knowledge_proposal_requests(request_id) ON DELETE CASCADE,
+    proposal_id TEXT NOT NULL REFERENCES import_knowledge_entity_proposals(proposal_id) ON DELETE RESTRICT,
+    command_json TEXT NOT NULL,
+    projection_json TEXT NOT NULL,
+    entity_id TEXT REFERENCES knowledge_entities(id) ON DELETE RESTRICT,
+    decided_at TEXT NOT NULL,
+    UNIQUE(proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_import_knowledge_proposal_reviews_request
+ON import_knowledge_proposal_reviews(request_id, decided_at, decision_id);
+"#;
+
 const VECTOR_INDEX_READY: &str = "ready";
 const VECTOR_INDEX_STALE: &str = "stale";
 
@@ -367,6 +432,12 @@ const VECTOR_INDEX_STALE: &str = "stale";
 pub struct SqliteStore {
     database_path: PathBuf,
     backup_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportKnowledgeProposalRequestReservation {
+    pub generation_run_id: String,
+    pub batch: Option<ImportKnowledgeProposalBatchProjection>,
 }
 
 impl SqliteStore {
@@ -597,6 +668,443 @@ impl SqliteStore {
         ).optional().map_err(Into::into)
     }
 
+    /// Reserves a stable provider run before any extraction can start.
+    /// Exact retries recover the original run id and completed batch, if any.
+    pub fn reserve_import_knowledge_proposal_request(
+        &self,
+        input: &ImportKnowledgeProposalRequestInput,
+        proposed_generation_run_id: &str,
+    ) -> KernelResult<ImportKnowledgeProposalRequestReservation> {
+        validate_import_knowledge_proposal_request_replay(input, input)
+            .map_err(map_import_knowledge_proposal_error)?;
+        if proposed_generation_run_id.trim().is_empty()
+            || !proposed_generation_run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(KernelError::Validation(
+                "import knowledge proposal generation run id must be path-safe".into(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((persisted, generation_run_id, batch)) =
+            load_import_knowledge_proposal_request(&transaction, &input.request_id)?
+        {
+            validate_import_knowledge_proposal_request_replay(input, &persisted)
+                .map_err(map_import_knowledge_proposal_error)?;
+            return Ok(ImportKnowledgeProposalRequestReservation {
+                generation_run_id,
+                batch,
+            });
+        }
+        let conversation_id = validate_authoritative_import_knowledge_request(&transaction, input)?;
+        transaction.execute(
+            "INSERT INTO import_knowledge_proposal_requests
+             (request_id, import_source_id, import_revision_id, conversation_id,
+              generation_run_id, request_json, requested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                input.request_id,
+                input.import_source_id,
+                input.import_revision_id,
+                conversation_id,
+                proposed_generation_run_id,
+                serde_json::to_string(input)?,
+                input.requested_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(ImportKnowledgeProposalRequestReservation {
+            generation_run_id: proposed_generation_run_id.into(),
+            batch: None,
+        })
+    }
+
+    /// Commits one immutable provider/rule result after its request receipt.
+    pub fn persist_import_knowledge_proposal_batch(
+        &self,
+        input: &ImportKnowledgeProposalRequestInput,
+        batch: &ImportKnowledgeProposalBatchProjection,
+    ) -> KernelResult<ImportKnowledgeProposalBatchProjection> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some((persisted, generation_run_id, existing_batch)) =
+            load_import_knowledge_proposal_request(&transaction, &input.request_id)?
+        else {
+            return Err(KernelError::NotFound {
+                entity: "ImportKnowledgeProposalRequest",
+                id: input.request_id.clone(),
+            });
+        };
+        validate_import_knowledge_proposal_request_replay(input, &persisted)
+            .map_err(map_import_knowledge_proposal_error)?;
+        if let Some(existing_batch) = existing_batch {
+            if existing_batch == *batch {
+                return Ok(existing_batch);
+            }
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal request {} already has a different batch",
+                input.request_id
+            )));
+        }
+        validate_import_knowledge_proposal_batch(input, &generation_run_id, batch)?;
+        for proposal in &batch.proposals {
+            validate_import_proposal_evidence_targets(&transaction, proposal)?;
+            transaction.execute(
+                "INSERT INTO import_knowledge_entity_proposals
+                 (proposal_id, request_id, conversation_id, proposal_revision,
+                  proposal_json, proposed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    proposal.proposal_id,
+                    proposal.request_id,
+                    proposal.conversation_id,
+                    proposal.proposal_revision,
+                    serde_json::to_string(proposal)?,
+                    proposal.proposed_at,
+                ],
+            )?;
+        }
+        let changed = transaction.execute(
+            "UPDATE import_knowledge_proposal_requests
+             SET batch_json = ?1, generated_at = ?2
+             WHERE request_id = ?3 AND batch_json IS NULL",
+            params![
+                serde_json::to_string(batch)?,
+                batch.generated_at,
+                input.request_id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal request {} batch changed concurrently",
+                input.request_id
+            )));
+        }
+        transaction.commit()?;
+        Ok(batch.clone())
+    }
+
+    pub fn get_import_knowledge_proposal_batch(
+        &self,
+        request_id: &str,
+    ) -> KernelResult<ImportKnowledgeProposalBatchProjection> {
+        if request_id.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "import knowledge proposal request id must not be empty".into(),
+            ));
+        }
+        let connection = self.connection()?;
+        let Some((input, generation_run_id, batch)) =
+            load_import_knowledge_proposal_request(&connection, request_id)?
+        else {
+            return Err(KernelError::NotFound {
+                entity: "ImportKnowledgeProposalRequest",
+                id: request_id.into(),
+            });
+        };
+        let batch = batch.ok_or_else(|| KernelError::NotFound {
+            entity: "ImportKnowledgeProposalBatch",
+            id: request_id.into(),
+        })?;
+        validate_import_knowledge_proposal_batch(&input, &generation_run_id, &batch)?;
+        Ok(batch)
+    }
+
+    /// Discovers durable proposal receipts by the authoritative import source
+    /// and revision. This is the restart boundary: callers do not need a
+    /// request id from a previous process, and rows are ordered deterministically.
+    pub fn discover_import_knowledge_proposals(
+        &self,
+        query: &ImportKnowledgeProposalDiscoveryQuery,
+    ) -> KernelResult<ImportKnowledgeProposalDiscoveryProjection> {
+        validate_import_knowledge_proposal_discovery_query(query)
+            .map_err(map_import_knowledge_proposal_error)?;
+        let connection = self.connection()?;
+        let source_exists = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM import_sources WHERE id = ?1)",
+            [&query.import_source_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !source_exists {
+            return Err(KernelError::NotFound {
+                entity: "ImportSource",
+                id: query.import_source_id.clone(),
+            });
+        }
+        let revision_matches = connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM import_revisions
+                 WHERE id = ?1 AND import_source_id = ?2
+             )",
+            params![query.import_revision_id, query.import_source_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !revision_matches {
+            return Err(KernelError::NotFound {
+                entity: "ImportRevision",
+                id: query.import_revision_id.clone(),
+            });
+        }
+
+        let limit = i64::from(query.limit);
+        let mut statement = connection.prepare(
+            "SELECT request_json, generation_run_id, batch_json,
+                    COALESCE(generated_at, requested_at) AS updated_at,
+                    (SELECT COUNT(*) FROM import_knowledge_entity_proposals proposal
+                     WHERE proposal.request_id = request.request_id) AS proposal_count,
+                    (SELECT COUNT(*) FROM import_knowledge_proposal_reviews review
+                     WHERE review.request_id = request.request_id) AS reviewed_count
+             FROM import_knowledge_proposal_requests request
+             WHERE import_source_id = ?1 AND import_revision_id = ?2
+             ORDER BY updated_at DESC, request_id ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement
+            .query_map(
+                params![query.import_source_id, query.import_revision_id, limit],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for (
+            request_json,
+            generation_run_id,
+            batch_json,
+            updated_at,
+            proposal_count,
+            reviewed_count,
+        ) in rows
+        {
+            let request: ImportKnowledgeProposalRequestInput = serde_json::from_str(&request_json)?;
+            validate_import_knowledge_proposal_request_replay(&request, &request)
+                .map_err(map_import_knowledge_proposal_error)?;
+            if request.import_source_id != query.import_source_id
+                || request.import_revision_id != query.import_revision_id
+            {
+                return Err(KernelError::Integrity(
+                    "import knowledge proposal discovery returned a cross-source receipt".into(),
+                ));
+            }
+            let batch = batch_json
+                .map(|json| serde_json::from_str::<ImportKnowledgeProposalBatchProjection>(&json))
+                .transpose()?;
+            if let Some(batch) = &batch {
+                validate_import_knowledge_proposal_batch(&request, &generation_run_id, batch)?;
+            }
+            let proposal_count = u32::try_from(proposal_count).map_err(|_| {
+                KernelError::Integrity("import knowledge proposal count overflow".into())
+            })?;
+            let reviewed_count = u32::try_from(reviewed_count).map_err(|_| {
+                KernelError::Integrity("import knowledge proposal review count overflow".into())
+            })?;
+            if (batch.is_some()
+                && proposal_count != batch.as_ref().map_or(0, |value| value.proposals.len()) as u32)
+                || reviewed_count > proposal_count
+            {
+                return Err(KernelError::Integrity(
+                    "import knowledge proposal discovery counts are inconsistent".into(),
+                ));
+            }
+            items.push(ImportKnowledgeProposalDiscoveryItem {
+                request,
+                generation_run_id,
+                state: if batch.is_some() {
+                    ImportKnowledgeProposalRequestState::Completed
+                } else {
+                    ImportKnowledgeProposalRequestState::Pending
+                },
+                batch,
+                proposal_count,
+                reviewed_count,
+                updated_at,
+            });
+        }
+        Ok(ImportKnowledgeProposalDiscoveryProjection {
+            contract_version: crate::domain::IMPORT_KNOWLEDGE_PROPOSAL_CONTRACT_VERSION.into(),
+            import_source_id: query.import_source_id.clone(),
+            import_revision_id: query.import_revision_id.clone(),
+            items,
+        })
+    }
+
+    /// Atomically commits a review receipt and, for Confirm, the first entity
+    /// revision plus every SQLite-derived evidence/search projection.
+    pub fn persist_import_knowledge_proposal_review(
+        &self,
+        input: &ImportKnowledgeProposalReviewCommandInput,
+        entity_id: Option<&str>,
+        reviewer: &crate::domain::contracts::GeneratorRef,
+    ) -> KernelResult<ImportKnowledgeProposalReviewProjection> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((persisted_input, projection)) =
+            load_import_knowledge_proposal_review(&transaction, &input.decision_id)?
+        {
+            validate_import_knowledge_proposal_review_replay(input, &persisted_input)
+                .map_err(map_import_knowledge_proposal_error)?;
+            return Ok(projection);
+        }
+        let (proposal, reviewed_decision_id) =
+            load_import_knowledge_entity_proposal(&transaction, &input.proposal_id)?.ok_or_else(
+                || KernelError::NotFound {
+                    entity: "ImportKnowledgeEntityProposal",
+                    id: input.proposal_id.clone(),
+                },
+            )?;
+        if let Some(decision_id) = reviewed_decision_id {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal {} was already reviewed by {}",
+                input.proposal_id, decision_id
+            )));
+        }
+        let context = load_import_knowledge_proposal_target_context(
+            &transaction,
+            &proposal.conversation_id,
+            &proposal.target_scope,
+        )?;
+        let plan =
+            plan_import_knowledge_proposal_review(input, &proposal, &context, entity_id, reviewer)
+                .map_err(map_import_knowledge_proposal_error)?;
+        if let Some(entity) = &plan.entity {
+            entity.validate_for_conversation(&proposal.conversation_id)?;
+            validate_import_evidence_targets(&transaction, &proposal.conversation_id, entity)?;
+            sync_embedded_evidence_refs(&transaction, &proposal.conversation_id, entity)?;
+            transaction.execute(
+                "INSERT INTO knowledge_entities
+                 (id, conversation_id, entity_json, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    entity.id,
+                    proposal.conversation_id,
+                    serde_json::to_string(entity)?,
+                    entity.revision,
+                    entity.updated_at,
+                ],
+            )?;
+            sync_knowledge_entity_fts(&transaction, &proposal.conversation_id, entity)?;
+            sync_knowledge_entity_vector(&transaction, &proposal.conversation_id, entity)?;
+        }
+        transaction.execute(
+            "INSERT INTO import_knowledge_proposal_reviews
+             (decision_id, request_id, proposal_id, command_json,
+              projection_json, entity_id, decided_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                plan.decision.decision_id,
+                plan.decision.request_id,
+                plan.decision.proposal_id,
+                serde_json::to_string(input)?,
+                serde_json::to_string(&plan.decision)?,
+                plan.decision.entity_id,
+                plan.decision.decided_at,
+            ],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE import_knowledge_entity_proposals
+             SET reviewed_decision_id = ?1
+             WHERE proposal_id = ?2 AND reviewed_decision_id IS NULL",
+            params![plan.decision.decision_id, plan.decision.proposal_id],
+        )?;
+        if changed != 1 {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal {} review changed concurrently",
+                input.proposal_id
+            )));
+        }
+        transaction.commit()?;
+        Ok(plan.decision)
+    }
+
+    pub fn replay_import_knowledge_proposal_review(
+        &self,
+        input: &ImportKnowledgeProposalReviewCommandInput,
+    ) -> KernelResult<Option<ImportKnowledgeProposalReviewProjection>> {
+        let connection = self.connection()?;
+        let Some((persisted_input, projection)) =
+            load_import_knowledge_proposal_review(&connection, &input.decision_id)?
+        else {
+            return Ok(None);
+        };
+        validate_import_knowledge_proposal_review_replay(input, &persisted_input)
+            .map_err(map_import_knowledge_proposal_error)?;
+        Ok(Some(projection))
+    }
+
+    pub fn plan_import_knowledge_proposal_review(
+        &self,
+        input: &ImportKnowledgeProposalReviewCommandInput,
+        entity_id: Option<&str>,
+        reviewer: &crate::domain::contracts::GeneratorRef,
+    ) -> KernelResult<crate::domain::ImportKnowledgeProposalReviewPlan> {
+        let connection = self.connection()?;
+        let (proposal, reviewed_decision_id) =
+            load_import_knowledge_entity_proposal(&connection, &input.proposal_id)?.ok_or_else(
+                || KernelError::NotFound {
+                    entity: "ImportKnowledgeEntityProposal",
+                    id: input.proposal_id.clone(),
+                },
+            )?;
+        if let Some(decision_id) = reviewed_decision_id {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal {} was already reviewed by {}",
+                input.proposal_id, decision_id
+            )));
+        }
+        let context = load_import_knowledge_proposal_target_context(
+            &connection,
+            &proposal.conversation_id,
+            &proposal.target_scope,
+        )?;
+        plan_import_knowledge_proposal_review(input, &proposal, &context, entity_id, reviewer)
+            .map_err(map_import_knowledge_proposal_error)
+    }
+
+    pub fn list_import_knowledge_proposal_reviews(
+        &self,
+        request_id: &str,
+    ) -> KernelResult<Vec<ImportKnowledgeProposalReviewProjection>> {
+        if request_id.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "import knowledge proposal request id must not be empty".into(),
+            ));
+        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT projection_json FROM import_knowledge_proposal_reviews
+             WHERE request_id = ?1 ORDER BY decided_at, decision_id",
+        )?;
+        let rows = statement.query_map([request_id], |row| {
+            parse_json::<ImportKnowledgeProposalReviewProjection>(&row.get::<_, String>(0)?, 0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn list_all_import_knowledge_proposal_reviews(
+        &self,
+    ) -> KernelResult<Vec<ImportKnowledgeProposalReviewProjection>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT projection_json FROM import_knowledge_proposal_reviews
+             ORDER BY decided_at, decision_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            parse_json::<ImportKnowledgeProposalReviewProjection>(&row.get::<_, String>(0)?, 0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn insert_focus_frame_lifecycle(
         &self,
         snapshot: &crate::domain::FocusFrameLifecycleSnapshot,
@@ -665,6 +1173,8 @@ impl SqliteStore {
         entity.validate_for_conversation(conversation_id)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
+        validate_import_evidence_targets(&transaction, conversation_id, entity)?;
+        sync_embedded_evidence_refs(&transaction, conversation_id, entity)?;
         transaction.execute("INSERT INTO knowledge_entities (id,conversation_id,entity_json,revision,updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET conversation_id=excluded.conversation_id,entity_json=excluded.entity_json,revision=excluded.revision,updated_at=excluded.updated_at", params![entity.id, conversation_id, serde_json::to_string(entity)?, entity.revision, entity.updated_at])?;
         sync_knowledge_entity_fts(&transaction, conversation_id, entity)?;
         sync_knowledge_entity_vector(&transaction, conversation_id, entity)?;
@@ -702,6 +1212,92 @@ impl SqliteStore {
         let entity: KnowledgeEntity = serde_json::from_str(&json)?;
         entity.validate_for_conversation(conversation_id)?;
         Ok(entity)
+    }
+
+    /// Atomically replaces the selected promotion candidates and records an
+    /// immutable receipt for exact replay after a lost response.
+    pub fn persist_focus_promotion_candidate_generation(
+        &self,
+        input: &FocusPromotionCandidateGenerationCommandInput,
+        actor: &crate::domain::contracts::GeneratorRef,
+    ) -> KernelResult<FocusPromotionCandidateGenerationProjection> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if let Some((persisted_input, projection)) =
+            load_focus_promotion_candidate_generation(&transaction, &input.generation_id)?
+        {
+            validate_focus_promotion_candidate_generation_replay(input, &persisted_input)
+                .map_err(map_focus_promotion_candidate_generation_error)?;
+            return Ok(projection);
+        }
+
+        let lifecycle = load_focus_frame_lifecycle(&transaction, &input.focus_frame_id)?;
+        let conversation_id = lifecycle.frame.conversation_id.clone();
+        let selected_entities = input
+            .candidate_refs
+            .iter()
+            .map(|candidate_ref| {
+                load_knowledge_entity(&transaction, &conversation_id, candidate_ref)
+            })
+            .collect::<KernelResult<Vec<_>>>()?;
+        let plan =
+            plan_focus_promotion_candidate_generation(input, &lifecycle, &selected_entities, actor)
+                .map_err(map_focus_promotion_candidate_generation_error)?;
+        let changed = transaction.execute(
+            "UPDATE focus_frame_lifecycle
+             SET frame_json = ?1, status = ?2, revision = ?3, updated_at = ?4, closed_at = ?5
+             WHERE focus_frame_id = ?6 AND conversation_id = ?7 AND revision = ?8",
+            params![
+                serde_json::to_string(&plan.lifecycle.frame)?,
+                serde_json::to_string(&plan.lifecycle.status)?,
+                plan.lifecycle.revision,
+                plan.lifecycle.updated_at,
+                plan.lifecycle.closed_at,
+                plan.lifecycle.frame.id,
+                plan.lifecycle.frame.conversation_id,
+                input.expected_lifecycle_revision,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(KernelError::Integrity(format!(
+                "focus frame {} lifecycle revision conflict",
+                input.focus_frame_id
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO focus_promotion_candidate_generations
+             (generation_id, focus_frame_id, conversation_id, request_json, projection_json, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                plan.generation.generation_id,
+                plan.generation.focus_frame_id,
+                plan.generation.conversation_id,
+                serde_json::to_string(input)?,
+                serde_json::to_string(&plan.generation)?,
+                plan.generation.generated_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(plan.generation)
+    }
+
+    pub fn get_focus_promotion_candidate_generation(
+        &self,
+        generation_id: &str,
+    ) -> KernelResult<FocusPromotionCandidateGenerationProjection> {
+        if generation_id.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "focus promotion generation id must not be empty".into(),
+            ));
+        }
+        let connection = self.connection()?;
+        load_focus_promotion_candidate_generation(&connection, generation_id)?
+            .map(|(_, projection)| projection)
+            .ok_or_else(|| KernelError::NotFound {
+                entity: "FocusPromotionCandidateGeneration",
+                id: generation_id.into(),
+            })
     }
 
     /// Commits the immutable decision and every SQLite-derived mutation as one unit.
@@ -964,6 +1560,8 @@ impl SqliteStore {
         }
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
+        validate_import_evidence_targets(&transaction, conversation_id, entity)?;
+        sync_embedded_evidence_refs(&transaction, conversation_id, entity)?;
         transaction.execute(
             "INSERT INTO knowledge_entities (id,conversation_id,entity_json,revision,updated_at)
              VALUES (?1,?2,?3,?4,?5)
@@ -2525,11 +3123,424 @@ impl SqliteStore {
                 [now_timestamp()],
             )?;
             transaction.commit()?;
+            current_version = 16;
         }
 
-        debug_assert_eq!(SCHEMA_VERSION, 16);
+        if current_version < 17 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(MIGRATION_V17)?;
+            transaction.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (17, ?1)",
+                [now_timestamp()],
+            )?;
+            transaction.commit()?;
+            current_version = 17;
+        }
+
+        if current_version < 18 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(MIGRATION_V18)?;
+            transaction.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (18, ?1)",
+                [now_timestamp()],
+            )?;
+            transaction.commit()?;
+        }
+
+        debug_assert_eq!(SCHEMA_VERSION, 18);
         Ok(())
     }
+}
+
+fn load_import_knowledge_proposal_request(
+    connection: &Connection,
+    request_id: &str,
+) -> KernelResult<
+    Option<(
+        ImportKnowledgeProposalRequestInput,
+        String,
+        Option<ImportKnowledgeProposalBatchProjection>,
+    )>,
+> {
+    let stored = connection
+        .query_row(
+            "SELECT request_json, generation_run_id, batch_json
+             FROM import_knowledge_proposal_requests WHERE request_id = ?1",
+            [request_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    stored
+        .map(|(request_json, generation_run_id, batch_json)| {
+            let request = serde_json::from_str(&request_json)?;
+            validate_import_knowledge_proposal_request_replay(&request, &request)
+                .map_err(map_import_knowledge_proposal_error)?;
+            let batch = batch_json
+                .map(|json| serde_json::from_str(&json))
+                .transpose()?;
+            Ok((request, generation_run_id, batch))
+        })
+        .transpose()
+}
+
+fn validate_authoritative_import_knowledge_request(
+    transaction: &Transaction<'_>,
+    input: &ImportKnowledgeProposalRequestInput,
+) -> KernelResult<String> {
+    let (conversation_id, source_hash) = transaction
+        .query_row(
+            "SELECT conversation_id, content_hash FROM import_sources WHERE id = ?1",
+            [&input.import_source_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| KernelError::NotFound {
+            entity: "ImportSource",
+            id: input.import_source_id.clone(),
+        })?;
+    if source_hash != input.expected_source_content_hash {
+        return Err(KernelError::Integrity(
+            "import source content hash changed before proposal generation".into(),
+        ));
+    }
+    let (revision_source_id, revision_status) = transaction
+        .query_row(
+            "SELECT import_source_id, status FROM import_revisions WHERE id = ?1",
+            [&input.import_revision_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    parse_json::<ImportRevisionStatus>(&row.get::<_, String>(1)?, 1)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| KernelError::NotFound {
+            entity: "ImportRevision",
+            id: input.import_revision_id.clone(),
+        })?;
+    if revision_source_id != input.import_source_id
+        || revision_status != ImportRevisionStatus::Parsed
+    {
+        return Err(KernelError::Validation(
+            "import knowledge proposals require the selected parsed source revision".into(),
+        ));
+    }
+    for message_id in &input.selected_message_ids {
+        let exists = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM imported_messages
+                 WHERE id = ?1 AND import_revision_id = ?2
+             )",
+            params![message_id, input.import_revision_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exists {
+            return Err(KernelError::Validation(format!(
+                "import knowledge proposal source message {message_id} is not in the selected revision"
+            )));
+        }
+    }
+    let workspace_id = transaction.query_row(
+        "SELECT workspace_id FROM conversations WHERE id = ?1",
+        [&conversation_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    match &input.target_scope {
+        KnowledgeScope::Conversation {
+            workspace_id: scoped_workspace,
+            conversation_id: scoped_conversation,
+        } if scoped_workspace == &workspace_id && scoped_conversation == &conversation_id => {}
+        KnowledgeScope::FocusFrame {
+            workspace_id: scoped_workspace,
+            conversation_id: scoped_conversation,
+            focus_frame_id,
+        } if scoped_workspace == &workspace_id && scoped_conversation == &conversation_id => {
+            let lifecycle = load_focus_frame_lifecycle(transaction, focus_frame_id)?;
+            if lifecycle.status != crate::domain::FocusFrameLifecycleStatus::Active
+                || lifecycle.frame.conversation_id != conversation_id
+            {
+                return Err(KernelError::Validation(
+                    "import knowledge proposal target FocusFrame must be active".into(),
+                ));
+            }
+        }
+        _ => {
+            return Err(KernelError::Validation(
+                "import knowledge proposal target must be the same conversation or active FocusFrame"
+                    .into(),
+            ));
+        }
+    }
+    Ok(conversation_id)
+}
+
+fn validate_import_knowledge_proposal_batch(
+    input: &ImportKnowledgeProposalRequestInput,
+    generation_run_id: &str,
+    batch: &ImportKnowledgeProposalBatchProjection,
+) -> KernelResult<()> {
+    let consistent = batch.contract_version
+        == crate::domain::IMPORT_KNOWLEDGE_PROPOSAL_CONTRACT_VERSION
+        && batch.request_id == input.request_id
+        && batch.import_source_id == input.import_source_id
+        && batch.import_revision_id == input.import_revision_id
+        && batch.source_content_hash == input.expected_source_content_hash
+        && batch.target_scope == input.target_scope
+        && batch.generation_run_id == generation_run_id
+        && batch.batch_revision == 1
+        && batch.requested_at == input.requested_at
+        && !batch.generated_at.trim().is_empty()
+        && batch.generator.validate().is_ok()
+        && matches!(
+            batch.generator.kind,
+            crate::domain::contracts::GeneratorKind::Model
+                | crate::domain::contracts::GeneratorKind::DeterministicRule
+        )
+        && batch.proposals.iter().all(|proposal| {
+            proposal.contract_version == batch.contract_version
+                && proposal.request_id == batch.request_id
+                && proposal.import_source_id == batch.import_source_id
+                && proposal.import_revision_id == batch.import_revision_id
+                && proposal.conversation_id == batch.conversation_id
+                && proposal.target_scope == batch.target_scope
+                && proposal.generator == batch.generator
+                && proposal.proposal_revision == 1
+                && !proposal.proposal_id.trim().is_empty()
+                && !proposal.evidence.is_empty()
+        });
+    let mut proposal_ids = HashSet::new();
+    if !consistent
+        || batch
+            .proposals
+            .iter()
+            .any(|proposal| !proposal_ids.insert(proposal.proposal_id.as_str()))
+    {
+        return Err(KernelError::Integrity(format!(
+            "import knowledge proposal request {} batch is inconsistent with its immutable receipt",
+            input.request_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_import_proposal_evidence_targets(
+    transaction: &Transaction<'_>,
+    proposal: &ImportKnowledgeEntityProposal,
+) -> KernelResult<()> {
+    let mut evidence_ids = HashSet::new();
+    for evidence in &proposal.evidence {
+        evidence.validate()?;
+        if !evidence_ids.insert(evidence.id.as_str()) {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal {} contains duplicate EvidenceRef ids",
+                proposal.proposal_id
+            )));
+        }
+        let EvidenceTarget::ImportContent {
+            import_source_id,
+            import_revision_id,
+            locator,
+        } = &evidence.target
+        else {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal {} contains non-import evidence",
+                proposal.proposal_id
+            )));
+        };
+        let resolved = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM import_sources source
+                 JOIN import_revisions revision ON revision.import_source_id = source.id
+                 JOIN imported_messages message ON message.import_revision_id = revision.id
+                 WHERE source.id = ?1 AND source.conversation_id = ?2
+                   AND revision.id = ?3 AND message.source_locator = ?4
+             )",
+            params![
+                import_source_id,
+                proposal.conversation_id,
+                import_revision_id,
+                locator,
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !resolved
+            || import_source_id != &proposal.import_source_id
+            || import_revision_id != &proposal.import_revision_id
+            || evidence.content_hash.is_none()
+            || evidence.excerpt.is_none()
+        {
+            return Err(KernelError::Integrity(format!(
+                "import knowledge proposal {} contains unresolved EvidenceRef provenance",
+                proposal.proposal_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn load_import_knowledge_entity_proposal(
+    connection: &Connection,
+    proposal_id: &str,
+) -> KernelResult<Option<(ImportKnowledgeEntityProposal, Option<String>)>> {
+    connection
+        .query_row(
+            "SELECT proposal_json, reviewed_decision_id
+             FROM import_knowledge_entity_proposals WHERE proposal_id = ?1",
+            [proposal_id],
+            |row| {
+                Ok((
+                    parse_json::<ImportKnowledgeEntityProposal>(&row.get::<_, String>(0)?, 0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn load_import_knowledge_proposal_target_context(
+    connection: &Connection,
+    conversation_id: &str,
+    target_scope: &KnowledgeScope,
+) -> KernelResult<ImportKnowledgeProposalTargetContext> {
+    let workspace_id = connection.query_row(
+        "SELECT workspace_id FROM conversations WHERE id = ?1",
+        [conversation_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    let active_focus_frame_id = match target_scope {
+        KnowledgeScope::FocusFrame { focus_frame_id, .. } => {
+            let lifecycle = load_focus_frame_lifecycle(connection, focus_frame_id)?;
+            if lifecycle.status != crate::domain::FocusFrameLifecycleStatus::Active {
+                return Err(KernelError::Validation(
+                    "import knowledge proposal target FocusFrame is no longer active".into(),
+                ));
+            }
+            Some(focus_frame_id.clone())
+        }
+        _ => None,
+    };
+    Ok(ImportKnowledgeProposalTargetContext {
+        workspace_id,
+        conversation_id: conversation_id.into(),
+        active_focus_frame_id,
+    })
+}
+
+fn load_import_knowledge_proposal_review(
+    connection: &Connection,
+    decision_id: &str,
+) -> KernelResult<
+    Option<(
+        ImportKnowledgeProposalReviewCommandInput,
+        ImportKnowledgeProposalReviewProjection,
+    )>,
+> {
+    let stored = connection
+        .query_row(
+            "SELECT command_json, projection_json
+             FROM import_knowledge_proposal_reviews WHERE decision_id = ?1",
+            [decision_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    stored
+        .map(|(command_json, projection_json)| {
+            let input = serde_json::from_str(&command_json)?;
+            validate_import_knowledge_proposal_review_replay(&input, &input)
+                .map_err(map_import_knowledge_proposal_error)?;
+            let projection = serde_json::from_str(&projection_json)?;
+            Ok((input, projection))
+        })
+        .transpose()
+}
+
+fn load_focus_promotion_candidate_generation(
+    connection: &Connection,
+    generation_id: &str,
+) -> KernelResult<
+    Option<(
+        FocusPromotionCandidateGenerationCommandInput,
+        FocusPromotionCandidateGenerationProjection,
+    )>,
+> {
+    let stored = connection
+        .query_row(
+            "SELECT request_json, projection_json
+             FROM focus_promotion_candidate_generations WHERE generation_id = ?1",
+            [generation_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    stored
+        .map(|(request_json, projection_json)| {
+            let input: FocusPromotionCandidateGenerationCommandInput =
+                serde_json::from_str(&request_json)?;
+            let projection: FocusPromotionCandidateGenerationProjection =
+                serde_json::from_str(&projection_json)?;
+            validate_persisted_focus_promotion_candidate_generation(&input, &projection)?;
+            Ok((input, projection))
+        })
+        .transpose()
+}
+
+fn validate_persisted_focus_promotion_candidate_generation(
+    input: &FocusPromotionCandidateGenerationCommandInput,
+    projection: &FocusPromotionCandidateGenerationProjection,
+) -> KernelResult<()> {
+    let memory_version = input
+        .expected_memory_version
+        .checked_add(1)
+        .ok_or_else(|| {
+            KernelError::Integrity("focus promotion generation memory version overflowed".into())
+        })?;
+    let lifecycle_revision = input
+        .expected_lifecycle_revision
+        .checked_add(1)
+        .ok_or_else(|| {
+            KernelError::Integrity(
+                "focus promotion generation lifecycle revision overflowed".into(),
+            )
+        })?;
+    let mut expected_refs = input.candidate_refs.clone();
+    expected_refs.sort_unstable();
+    let source_revisions_are_consistent = projection.source_entity_revisions.len()
+        == expected_refs.len()
+        && projection
+            .source_entity_revisions
+            .iter()
+            .zip(&expected_refs)
+            .all(|(source, expected)| {
+                source.candidate_ref == *expected && source.entity_revision > 0
+            });
+    let consistent = projection.contract_version
+        == crate::domain::FOCUS_PROMOTION_GENERATION_CONTRACT_VERSION
+        && projection.generation_id == input.generation_id
+        && projection.focus_frame_id == input.focus_frame_id
+        && !projection.conversation_id.trim().is_empty()
+        && projection.branch_kind != crate::domain::contracts::FocusBranchKind::Mainline
+        && projection.candidate_refs == expected_refs
+        && source_revisions_are_consistent
+        && projection.memory_version == memory_version
+        && projection.lifecycle_revision == lifecycle_revision
+        && projection.selected_by.kind == crate::domain::contracts::GeneratorKind::User
+        && projection.selected_by.validate().is_ok()
+        && projection.generated_at == input.generated_at;
+    if !consistent {
+        return Err(KernelError::Integrity(format!(
+            "focus promotion generation {} projection is inconsistent with its immutable request",
+            input.generation_id
+        )));
+    }
+    Ok(())
 }
 
 fn load_focus_promotion_decision(
@@ -2737,6 +3748,35 @@ fn map_focus_promotion_error(error: crate::domain::FocusPromotionDecisionError) 
         StaleMemoryVersion { .. } | StaleLifecycleRevision { .. } | StaleEntityRevision { .. } => {
             KernelError::Integrity(error.to_string())
         }
+        _ => KernelError::Validation(error.to_string()),
+    }
+}
+
+fn map_focus_promotion_candidate_generation_error(
+    error: crate::domain::FocusPromotionCandidateGenerationError,
+) -> KernelError {
+    use crate::domain::FocusPromotionCandidateGenerationError::{
+        GenerationIdConflict, StaleLifecycleRevision, StaleMemoryVersion,
+    };
+    match error {
+        GenerationIdConflict | StaleLifecycleRevision { .. } | StaleMemoryVersion { .. } => {
+            KernelError::Integrity(error.to_string())
+        }
+        _ => KernelError::Validation(error.to_string()),
+    }
+}
+
+fn map_import_knowledge_proposal_error(
+    error: crate::domain::ImportKnowledgeProposalError,
+) -> KernelError {
+    use crate::domain::ImportKnowledgeProposalError::{
+        DecisionIdConflict, RequestIdConflict, SourceContentHashMismatch, StaleProposalRevision,
+    };
+    match error {
+        DecisionIdConflict
+        | RequestIdConflict
+        | SourceContentHashMismatch
+        | StaleProposalRevision { .. } => KernelError::Integrity(error.to_string()),
         _ => KernelError::Validation(error.to_string()),
     }
 }
@@ -3236,6 +4276,89 @@ fn parent_first_import_messages(
     ordered
 }
 
+fn validate_import_evidence_targets(
+    transaction: &Transaction<'_>,
+    conversation_id: &str,
+    entity: &KnowledgeEntity,
+) -> KernelResult<()> {
+    for scoped in &entity.evidence {
+        let EvidenceTarget::ImportContent {
+            import_source_id,
+            import_revision_id,
+            locator,
+        } = &scoped.evidence.target
+        else {
+            continue;
+        };
+        let resolved = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM import_sources source
+                 JOIN import_revisions revision ON revision.import_source_id = source.id
+                 JOIN imported_messages message ON message.import_revision_id = revision.id
+                 WHERE source.id = ?1
+                   AND source.conversation_id = ?2
+                   AND revision.id = ?3
+                   AND message.source_locator = ?4
+             )",
+            params![
+                import_source_id,
+                conversation_id,
+                import_revision_id,
+                locator,
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !resolved {
+            return Err(KernelError::Integrity(format!(
+                "KnowledgeEntity {} contains an import EvidenceRef that does not resolve to the same conversation source, revision, and locator",
+                entity.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn sync_embedded_evidence_refs(
+    transaction: &Transaction<'_>,
+    conversation_id: &str,
+    entity: &KnowledgeEntity,
+) -> KernelResult<()> {
+    for scoped in &entity.evidence {
+        let existing_conversation = transaction
+            .query_row(
+                "SELECT conversation_id FROM evidence_refs WHERE id = ?1",
+                [&scoped.evidence.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if existing_conversation
+            .as_deref()
+            .is_some_and(|stored| stored != conversation_id)
+        {
+            return Err(KernelError::Integrity(format!(
+                "EvidenceRef {} already belongs to another conversation",
+                scoped.evidence.id
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO evidence_refs (id, conversation_id, evidence_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                 evidence_json = excluded.evidence_json,
+                 created_at = excluded.created_at
+             WHERE evidence_refs.conversation_id = excluded.conversation_id",
+            params![
+                scoped.evidence.id,
+                conversation_id,
+                serde_json::to_string(&scoped.evidence)?,
+                scoped.evidence.created_at,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn row_to_workspace(row: &Row<'_>) -> rusqlite::Result<Workspace> {
     Ok(Workspace {
         id: row.get(0)?,
@@ -3357,7 +4480,7 @@ mod tests {
         FOCUS_CONTRACT_VERSION, FocusBranchKind, FocusContextPolicy, FocusFrame, FocusMemoryScope,
         GeneratorKind, GeneratorRef, ImportPlatform, ImportRevision, ImportRevisionStatus,
         ImportSource, ImportedMessage, KNOWLEDGE_CONTRACT_VERSION, KnowledgeEntityKind,
-        KnowledgeRelationKind, KnowledgeScope, ParseReport,
+        KnowledgeRelationKind, KnowledgeScope, ParseReport, ScopedEvidenceRef,
     };
 
     fn promotion_actor() -> GeneratorRef {
@@ -3434,6 +4557,83 @@ mod tests {
         (workspace, conversation, entity)
     }
 
+    fn candidate_generation_input() -> FocusPromotionCandidateGenerationCommandInput {
+        FocusPromotionCandidateGenerationCommandInput {
+            generation_id: "generation-persisted-1".into(),
+            focus_frame_id: "focus-persisted-1".into(),
+            expected_memory_version: 1,
+            expected_lifecycle_revision: 1,
+            candidate_refs: vec!["entity-focus-candidate".into()],
+            generated_at: "2026-09-01T02:00:00Z".into(),
+        }
+    }
+
+    fn insert_active_candidate_generation_fixture(
+        store: &SqliteStore,
+    ) -> (Workspace, Conversation, KnowledgeEntity) {
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Candidate generation".into(),
+            })
+            .expect("conversation");
+        let lifecycle = focus_lifecycle(&conversation.id);
+        store
+            .insert_focus_frame_lifecycle(&lifecycle)
+            .expect("insert lifecycle");
+        let entity = KnowledgeEntity {
+            contract_version: KNOWLEDGE_CONTRACT_VERSION.into(),
+            id: "entity-focus-candidate".into(),
+            kind: KnowledgeEntityKind::Decision,
+            name: "Select the verified branch result".into(),
+            aliases: vec![],
+            scope: KnowledgeScope::FocusFrame {
+                workspace_id: workspace.id.clone(),
+                conversation_id: conversation.id.clone(),
+                focus_frame_id: lifecycle.frame.id,
+            },
+            status: KnowledgeStatus::Candidate,
+            revision: 3,
+            evidence: vec![ScopedEvidenceRef {
+                id: "scoped-generation-evidence".into(),
+                evidence: EvidenceRef {
+                    id: "generation-evidence".into(),
+                    target: EvidenceTarget::MessageBlock {
+                        message_id: "message-generation".into(),
+                        content_block_index: 0,
+                    },
+                    content_hash: Some("sha256:generation".into()),
+                    excerpt: Some("Verified branch result".into()),
+                    created_at: "2026-09-01T01:50:00Z".into(),
+                },
+                scope: KnowledgeScope::FocusFrame {
+                    workspace_id: workspace.id.clone(),
+                    conversation_id: conversation.id.clone(),
+                    focus_frame_id: "focus-persisted-1".into(),
+                },
+                status: KnowledgeStatus::Candidate,
+                revision: 1,
+                generator: GeneratorRef {
+                    kind: GeneratorKind::Model,
+                    generator_id: "extractor".into(),
+                    generator_version: "v1".into(),
+                },
+            }],
+            generator: GeneratorRef {
+                kind: GeneratorKind::Model,
+                generator_id: "extractor".into(),
+                generator_version: "v1".into(),
+            },
+            created_at: "2026-09-01T01:50:00Z".into(),
+            updated_at: "2026-09-01T01:50:00Z".into(),
+        };
+        store
+            .upsert_knowledge_entity(&conversation.id, &entity)
+            .expect("insert candidate");
+        (workspace, conversation, entity)
+    }
+
     fn focus_lifecycle(conversation_id: &str) -> crate::domain::FocusFrameLifecycleSnapshot {
         crate::domain::FocusFrameLifecycleSnapshot {
             contract_version: crate::domain::FOCUS_LIFECYCLE_CONTRACT_VERSION.into(),
@@ -3503,6 +4703,111 @@ mod tests {
             },
             vector,
         }
+    }
+
+    #[test]
+    fn focus_candidate_generation_commits_receipt_and_lifecycle_across_restart() {
+        let directory = TempDir::new().expect("temp directory");
+        let database_path = directory.path().join("generation.sqlite3");
+        let store = SqliteStore::open(&database_path).expect("open store");
+        insert_active_candidate_generation_fixture(&store);
+        let input = candidate_generation_input();
+
+        let projection = store
+            .persist_focus_promotion_candidate_generation(&input, &promotion_actor())
+            .expect("persist generation");
+        drop(store);
+        let restored = SqliteStore::open(&database_path).expect("reopen store");
+        let lifecycle = restored
+            .get_focus_frame_lifecycle(&input.focus_frame_id)
+            .expect("restored lifecycle");
+
+        assert_eq!(projection.memory_version, 2);
+        assert_eq!(projection.lifecycle_revision, 2);
+        assert_eq!(
+            lifecycle.frame.memory_scope.promote_refs,
+            input.candidate_refs
+        );
+        assert_eq!(
+            restored
+                .get_focus_promotion_candidate_generation(&input.generation_id)
+                .expect("restored receipt"),
+            projection
+        );
+    }
+
+    #[test]
+    fn focus_candidate_generation_exact_replay_does_not_increment_versions_twice() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("generation.sqlite3")).expect("open store");
+        insert_active_candidate_generation_fixture(&store);
+        let input = candidate_generation_input();
+        let first = store
+            .persist_focus_promotion_candidate_generation(&input, &promotion_actor())
+            .expect("first generation");
+
+        let replay = store
+            .persist_focus_promotion_candidate_generation(&input, &promotion_actor())
+            .expect("exact replay");
+        let lifecycle = store
+            .get_focus_frame_lifecycle(&input.focus_frame_id)
+            .expect("lifecycle");
+
+        assert_eq!(replay, first);
+        assert_eq!((lifecycle.frame.memory_version, lifecycle.revision), (2, 2));
+    }
+
+    #[test]
+    fn focus_candidate_generation_rejects_reused_id_with_changed_input() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("generation.sqlite3")).expect("open store");
+        insert_active_candidate_generation_fixture(&store);
+        let input = candidate_generation_input();
+        store
+            .persist_focus_promotion_candidate_generation(&input, &promotion_actor())
+            .expect("first generation");
+        let mut conflicting = input.clone();
+        conflicting.generated_at = "2026-09-01T02:01:00Z".into();
+
+        let error = store
+            .persist_focus_promotion_candidate_generation(&conflicting, &promotion_actor())
+            .expect_err("conflicting replay");
+
+        assert!(
+            error
+                .to_string()
+                .contains("reused with a different command")
+        );
+    }
+
+    #[test]
+    fn stale_focus_candidate_generation_rolls_back_receipt_and_lifecycle() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("generation.sqlite3")).expect("open store");
+        insert_active_candidate_generation_fixture(&store);
+        let mut stale = candidate_generation_input();
+        stale.expected_memory_version = 2;
+
+        store
+            .persist_focus_promotion_candidate_generation(&stale, &promotion_actor())
+            .expect_err("stale generation");
+        let lifecycle = store
+            .get_focus_frame_lifecycle(&stale.focus_frame_id)
+            .expect("unchanged lifecycle");
+        let connection = store.connection().expect("connection");
+        let receipt_rows: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM focus_promotion_candidate_generations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("receipt rows");
+
+        assert_eq!((lifecycle.frame.memory_version, lifecycle.revision), (1, 1));
+        assert_eq!(receipt_rows, 0);
     }
 
     #[test]
@@ -4192,6 +5497,373 @@ mod tests {
         (source, revision, messages, report)
     }
 
+    fn import_proposal_request(
+        workspace_id: &str,
+        conversation_id: &str,
+        source: &ImportSource,
+        revision: &ImportRevision,
+        message_id: &str,
+    ) -> ImportKnowledgeProposalRequestInput {
+        ImportKnowledgeProposalRequestInput {
+            request_id: "import-proposal-request-1".into(),
+            import_source_id: source.id.clone(),
+            import_revision_id: revision.id.clone(),
+            expected_source_content_hash: source.content_hash.clone(),
+            selected_message_ids: vec![message_id.into()],
+            target_scope: KnowledgeScope::Conversation {
+                workspace_id: workspace_id.into(),
+                conversation_id: conversation_id.into(),
+            },
+            requested_at: "2026-09-01T14:00:00Z".into(),
+        }
+    }
+
+    fn import_proposal_batch(
+        request: &ImportKnowledgeProposalRequestInput,
+        source: &ImportSource,
+        revision: &ImportRevision,
+        message: &ImportedMessage,
+        generation_run_id: &str,
+    ) -> ImportKnowledgeProposalBatchProjection {
+        crate::domain::plan_import_knowledge_proposals(
+            request,
+            source,
+            revision,
+            &crate::domain::ImportKnowledgeProposalTargetContext {
+                workspace_id: match &request.target_scope {
+                    KnowledgeScope::Conversation { workspace_id, .. }
+                    | KnowledgeScope::FocusFrame { workspace_id, .. } => workspace_id.clone(),
+                    _ => unreachable!("test request uses a conversation-backed scope"),
+                },
+                conversation_id: source.conversation_id.clone(),
+                active_focus_frame_id: match &request.target_scope {
+                    KnowledgeScope::FocusFrame { focus_frame_id, .. } => {
+                        Some(focus_frame_id.clone())
+                    }
+                    _ => None,
+                },
+            },
+            &[crate::domain::ImportKnowledgeSourceSnapshot {
+                imported_message_id: message.id.clone(),
+                import_revision_id: revision.id.clone(),
+                source_locator: message.source_locator.clone(),
+                content_hash: "sha256:proposal-source-message".into(),
+                excerpt: "Imported decision with a durable source".into(),
+            }],
+            &[crate::domain::ImportKnowledgeSuggestionDraft {
+                ordinal: 0,
+                kind: KnowledgeEntityKind::Decision,
+                name: "Keep imported evidence durable".into(),
+                aliases: vec!["Durable import".into()],
+                evidence_message_ids: vec![message.id.clone()],
+            }],
+            generation_run_id,
+            &GeneratorRef {
+                kind: GeneratorKind::DeterministicRule,
+                generator_id: "proposal-rule".into(),
+                generator_version: "v1".into(),
+            },
+            "2026-09-01T14:01:00Z",
+        )
+        .expect("plan proposal batch")
+    }
+
+    #[test]
+    fn import_proposal_request_replays_the_reserved_generation_across_restart() {
+        let directory = TempDir::new().expect("temp directory");
+        let database_path = directory.path().join("proposal-request.sqlite3");
+        let store = SqliteStore::open(&database_path).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Proposal request".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let request = import_proposal_request(
+            &workspace.id,
+            &conversation.id,
+            &source,
+            &revision,
+            &messages[0].id,
+        );
+        let first = store
+            .reserve_import_knowledge_proposal_request(&request, "proposal-generation-run-1")
+            .expect("reserve request");
+        drop(store);
+
+        let reopened = SqliteStore::open(&database_path).expect("reopen store");
+        let replay = reopened
+            .reserve_import_knowledge_proposal_request(&request, "different-unused-run")
+            .expect("replay request");
+        let mut conflicting = request;
+        conflicting.requested_at = "2026-09-01T14:02:00Z".into();
+        let error = reopened
+            .reserve_import_knowledge_proposal_request(&conflicting, "conflicting-run")
+            .expect_err("reject changed request");
+
+        assert_eq!(first.generation_run_id, "proposal-generation-run-1");
+        assert_eq!(replay, first);
+        assert!(error.to_string().contains("reused with different input"));
+    }
+
+    #[test]
+    fn import_proposal_discovery_finds_pending_and_completed_requests_after_restart() {
+        let directory = TempDir::new().expect("temp directory");
+        let database_path = directory.path().join("proposal-discovery.sqlite3");
+        let store = SqliteStore::open(&database_path).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Proposal discovery".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let first = import_proposal_request(
+            &workspace.id,
+            &conversation.id,
+            &source,
+            &revision,
+            &messages[0].id,
+        );
+        store
+            .reserve_import_knowledge_proposal_request(&first, "proposal-generation-run-1")
+            .expect("reserve pending request");
+        let mut second = first.clone();
+        second.request_id = "import-proposal-request-2".into();
+        second.requested_at = "2026-09-01T14:02:00Z".into();
+        store
+            .reserve_import_knowledge_proposal_request(&second, "proposal-generation-run-2")
+            .expect("reserve completed request");
+        let batch = import_proposal_batch(
+            &second,
+            &source,
+            &revision,
+            &messages[0],
+            "proposal-generation-run-2",
+        );
+        store
+            .persist_import_knowledge_proposal_batch(&second, &batch)
+            .expect("persist batch");
+        drop(store);
+
+        let reopened = SqliteStore::open(&database_path).expect("reopen store");
+        let projection = reopened
+            .discover_import_knowledge_proposals(&ImportKnowledgeProposalDiscoveryQuery {
+                import_source_id: source.id.clone(),
+                import_revision_id: revision.id.clone(),
+                limit: 10,
+            })
+            .expect("discover proposals");
+        assert_eq!(projection.items.len(), 2);
+        assert_eq!(projection.items[0].request.request_id, second.request_id);
+        assert_eq!(
+            projection.items[0].state,
+            ImportKnowledgeProposalRequestState::Completed
+        );
+        assert_eq!(projection.items[0].proposal_count, 1);
+        assert_eq!(projection.items[1].request.request_id, first.request_id);
+        assert_eq!(
+            projection.items[1].state,
+            ImportKnowledgeProposalRequestState::Pending
+        );
+        assert!(projection.items[1].batch.is_none());
+    }
+
+    #[test]
+    fn import_proposal_confirm_commits_receipt_entity_evidence_and_indexes_atomically() {
+        let directory = TempDir::new().expect("temp directory");
+        let database_path = directory.path().join("proposal-confirm.sqlite3");
+        let store = SqliteStore::open(&database_path).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Proposal confirm".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let request = import_proposal_request(
+            &workspace.id,
+            &conversation.id,
+            &source,
+            &revision,
+            &messages[0].id,
+        );
+        let reservation = store
+            .reserve_import_knowledge_proposal_request(&request, "proposal-generation-run-1")
+            .expect("reserve request");
+        let batch = import_proposal_batch(
+            &request,
+            &source,
+            &revision,
+            &messages[0],
+            &reservation.generation_run_id,
+        );
+        store
+            .persist_import_knowledge_proposal_batch(&request, &batch)
+            .expect("persist batch");
+        let proposal = &batch.proposals[0];
+        let input = ImportKnowledgeProposalReviewCommandInput {
+            decision_id: "proposal-review-1".into(),
+            request_id: request.request_id.clone(),
+            proposal_id: proposal.proposal_id.clone(),
+            expected_proposal_revision: 1,
+            choice: crate::domain::ImportKnowledgeProposalReviewChoice::Confirm {
+                kind: proposal.suggested_kind,
+                name: proposal.suggested_name.clone(),
+                aliases: proposal.suggested_aliases.clone(),
+            },
+            decided_at: "2026-09-01T14:02:00Z".into(),
+        };
+        let decision = store
+            .persist_import_knowledge_proposal_review(
+                &input,
+                Some("entity-from-import-proposal"),
+                &promotion_actor(),
+            )
+            .expect("confirm proposal");
+        let replay = store
+            .persist_import_knowledge_proposal_review(
+                &input,
+                Some("unused-replay-entity-id"),
+                &promotion_actor(),
+            )
+            .expect("replay proposal review");
+        let entity = store
+            .get_knowledge_entity(&conversation.id, "entity-from-import-proposal")
+            .expect("confirmed entity");
+        let connection = store.connection().expect("connection");
+        let evidence_rows: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM evidence_refs WHERE conversation_id = ?1",
+                [&conversation.id],
+                |row| row.get(0),
+            )
+            .expect("evidence rows");
+
+        assert_eq!(decision, replay);
+        assert_eq!(entity.status, KnowledgeStatus::Confirmed);
+        assert_eq!(entity.evidence.len(), 1);
+        assert_eq!(evidence_rows, 1);
+        assert_eq!(
+            store
+                .search_knowledge_full_text(&conversation.id, "durable", 5)
+                .expect("fts")
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .load_knowledge_vector_snapshot(&conversation.id)
+                .expect("vector snapshot")
+                .records
+                .len(),
+            1
+        );
+        drop(connection);
+        drop(store);
+        let reopened = SqliteStore::open(&database_path).expect("restart store");
+        assert_eq!(
+            reopened
+                .list_import_knowledge_proposal_reviews(&request.request_id)
+                .expect("restored reviews"),
+            vec![decision]
+        );
+    }
+
+    #[test]
+    fn invalid_import_proposal_batch_and_reject_leave_no_entity_parts() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("proposal-reject.sqlite3")).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Proposal reject".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let mut request = import_proposal_request(
+            &workspace.id,
+            &conversation.id,
+            &source,
+            &revision,
+            &messages[0].id,
+        );
+        request.request_id = "import-proposal-request-reject".into();
+        let reservation = store
+            .reserve_import_knowledge_proposal_request(&request, "proposal-generation-run-reject")
+            .expect("reserve request");
+        let mut invalid_batch = import_proposal_batch(
+            &request,
+            &source,
+            &revision,
+            &messages[0],
+            &reservation.generation_run_id,
+        );
+        invalid_batch.proposals[0].evidence[0].target = EvidenceTarget::ImportContent {
+            import_source_id: source.id.clone(),
+            import_revision_id: revision.id.clone(),
+            locator: "$.messages[missing]".into(),
+        };
+        store
+            .persist_import_knowledge_proposal_batch(&request, &invalid_batch)
+            .expect_err("reject unresolved proposal evidence");
+        let valid_batch = import_proposal_batch(
+            &request,
+            &source,
+            &revision,
+            &messages[0],
+            &reservation.generation_run_id,
+        );
+        store
+            .persist_import_knowledge_proposal_batch(&request, &valid_batch)
+            .expect("persist valid batch after rollback");
+        let proposal = &valid_batch.proposals[0];
+        let reject = ImportKnowledgeProposalReviewCommandInput {
+            decision_id: "proposal-review-reject".into(),
+            request_id: request.request_id.clone(),
+            proposal_id: proposal.proposal_id.clone(),
+            expected_proposal_revision: 1,
+            choice: crate::domain::ImportKnowledgeProposalReviewChoice::Reject {
+                reason: Some("Not useful".into()),
+            },
+            decided_at: "2026-09-01T14:02:00Z".into(),
+        };
+        store
+            .persist_import_knowledge_proposal_review(&reject, None, &promotion_actor())
+            .expect("reject proposal");
+        let connection = store.connection().expect("connection");
+        let counts: (u64, u64, u64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM knowledge_entities),
+                    (SELECT COUNT(*) FROM evidence_refs),
+                    (SELECT COUNT(*) FROM import_knowledge_proposal_reviews)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("row counts");
+
+        assert_eq!(counts, (0, 0, 1));
+    }
+
     #[test]
     fn import_bundle_persists_children_after_their_parents() {
         let directory = TempDir::new().expect("temp directory");
@@ -4227,6 +5899,200 @@ mod tests {
         assert_eq!(restored.revision, revision);
         assert_eq!(restored.report, report);
         assert_eq!(restored.messages.len(), 2);
+    }
+
+    #[test]
+    fn knowledge_entity_materializes_a_resolved_import_evidence_ref_atomically() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("entity-provenance.sqlite3")).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Imported evidence".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let mut entity =
+            knowledge_entity(&workspace.id, &conversation.id, KnowledgeStatus::Confirmed);
+        entity.evidence = vec![ScopedEvidenceRef {
+            id: "scoped-import-evidence-1".into(),
+            evidence: EvidenceRef {
+                id: "import-evidence-1".into(),
+                target: EvidenceTarget::ImportContent {
+                    import_source_id: source.id,
+                    import_revision_id: revision.id,
+                    locator: messages[0].source_locator.clone(),
+                },
+                content_hash: Some("sha256:child".into()),
+                excerpt: Some("child".into()),
+                created_at: "2026-09-01T00:00:00Z".into(),
+            },
+            scope: entity.scope.clone(),
+            status: KnowledgeStatus::Confirmed,
+            revision: 1,
+            generator: entity.generator.clone(),
+        }];
+
+        store
+            .upsert_knowledge_entity(&conversation.id, &entity)
+            .expect("persist entity and evidence");
+
+        let connection = store.connection().expect("connection");
+        let evidence_rows: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM evidence_refs WHERE id = 'import-evidence-1' AND conversation_id = ?1",
+                [&conversation.id],
+                |row| row.get(0),
+            )
+            .expect("evidence row count");
+        assert_eq!(evidence_rows, 1);
+    }
+
+    #[test]
+    fn knowledge_entity_rejects_an_unresolved_import_locator_without_partial_rows() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("entity-provenance.sqlite3")).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Invalid imported evidence".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+        let mut entity =
+            knowledge_entity(&workspace.id, &conversation.id, KnowledgeStatus::Confirmed);
+        entity.evidence = vec![ScopedEvidenceRef {
+            id: "scoped-invalid-import-evidence".into(),
+            evidence: EvidenceRef {
+                id: "invalid-import-evidence".into(),
+                target: EvidenceTarget::ImportContent {
+                    import_source_id: source.id,
+                    import_revision_id: revision.id,
+                    locator: "$.messages[missing]".into(),
+                },
+                content_hash: Some("sha256:missing".into()),
+                excerpt: Some("missing".into()),
+                created_at: "2026-09-01T00:00:00Z".into(),
+            },
+            scope: entity.scope.clone(),
+            status: KnowledgeStatus::Confirmed,
+            revision: 1,
+            generator: entity.generator.clone(),
+        }];
+
+        let error = store
+            .upsert_knowledge_entity(&conversation.id, &entity)
+            .expect_err("reject unresolved locator");
+
+        let connection = store.connection().expect("connection");
+        let partial_rows: (u64, u64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM knowledge_entities WHERE id = ?1),
+                    (SELECT COUNT(*) FROM evidence_refs WHERE id = 'invalid-import-evidence')",
+                [&entity.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("partial row counts");
+        assert!(error.to_string().contains("does not resolve"));
+        assert_eq!(partial_rows, (0, 0));
+    }
+
+    #[test]
+    fn markdown_entity_revision_rejects_unresolved_import_without_partial_rows() {
+        let directory = TempDir::new().expect("temp directory");
+        let store =
+            SqliteStore::open(directory.path().join("markdown-provenance.sqlite3")).expect("store");
+        let workspace = store.ensure_default_workspace().expect("workspace");
+        let conversation = store
+            .create_conversation(&CreateConversationInput {
+                workspace_id: workspace.id.clone(),
+                title: "Markdown imported evidence".into(),
+            })
+            .expect("conversation");
+        let (source, revision, messages, report) = import_bundle(&conversation.id);
+        store
+            .persist_import_bundle(&source, &revision, &messages, &report)
+            .expect("persist import");
+
+        let mut entity =
+            knowledge_entity(&workspace.id, &conversation.id, KnowledgeStatus::Confirmed);
+        store
+            .upsert_knowledge_entity(&conversation.id, &entity)
+            .expect("persist initial entity");
+        let initial_projection = crate::domain::contracts::MarkdownProjection {
+            contract_version: crate::domain::contracts::MARKDOWN_PROJECTION_CONTRACT_VERSION.into(),
+            id: "markdown-imported-evidence".into(),
+            target_entity_id: entity.id.clone(),
+            relative_path: "entities/markdown-imported-evidence.md".into(),
+            entity_revision: 1,
+            projection_revision: 1,
+            content_hash: "hash-1".into(),
+            frontmatter_version: "mindscape.frontmatter.v1".into(),
+            created_at: "2026-09-01T00:00:00Z".into(),
+        };
+        store
+            .persist_markdown_projection(&initial_projection)
+            .expect("persist initial projection");
+
+        entity.revision = 2;
+        entity.name = "Invalid imported revision".into();
+        entity.evidence = vec![ScopedEvidenceRef {
+            id: "scoped-markdown-invalid-import".into(),
+            evidence: EvidenceRef {
+                id: "markdown-invalid-import".into(),
+                target: EvidenceTarget::ImportContent {
+                    import_source_id: source.id,
+                    import_revision_id: revision.id,
+                    locator: "$.messages[missing]".into(),
+                },
+                content_hash: Some("sha256:missing".into()),
+                excerpt: Some("missing".into()),
+                created_at: "2026-09-01T00:00:00Z".into(),
+            },
+            scope: entity.scope.clone(),
+            status: KnowledgeStatus::Confirmed,
+            revision: 1,
+            generator: entity.generator.clone(),
+        }];
+        let mut next_projection = initial_projection.clone();
+        next_projection.entity_revision = 2;
+        next_projection.projection_revision = 2;
+        next_projection.content_hash = "hash-2".into();
+
+        let error = store
+            .persist_markdown_entity_revision(&conversation.id, &entity, &next_projection)
+            .expect_err("reject unresolved markdown evidence");
+
+        let connection = store.connection().expect("connection");
+        let rows: (u64, u64, u64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT revision FROM knowledge_entities WHERE id = ?1),
+                    (SELECT COUNT(*) FROM evidence_refs WHERE id = 'markdown-invalid-import'),
+                    (SELECT projection_revision FROM markdown_projections WHERE id = ?2)",
+                params![entity.id, next_projection.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("unchanged row counts");
+        assert!(error.to_string().contains("does not resolve"));
+        assert_eq!(rows, (1, 0, 1));
+        assert!(
+            store
+                .search_knowledge_full_text(&conversation.id, "Invalid imported", 10)
+                .expect("search unchanged entity")
+                .is_empty()
+        );
     }
 
     #[test]

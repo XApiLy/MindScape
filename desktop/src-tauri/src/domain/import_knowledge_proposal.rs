@@ -12,6 +12,7 @@ use super::contracts::{
 pub const IMPORT_KNOWLEDGE_PROPOSAL_CONTRACT_VERSION: &str =
     "mindscape.import-knowledge-proposal.v1";
 const MAX_PROPOSALS_PER_REQUEST: usize = 64;
+pub const MAX_IMPORT_KNOWLEDGE_PROPOSAL_DISCOVERY_LIMIT: usize = 64;
 const MAX_ALIASES_PER_PROPOSAL: usize = 16;
 const MAX_EVIDENCE_PER_PROPOSAL: usize = 16;
 const MAX_NAME_CHARS: usize = 240;
@@ -100,6 +101,48 @@ pub struct ImportKnowledgeProposalBatchProjection {
     pub batch_revision: u64,
     pub requested_at: String,
     pub generated_at: String,
+}
+
+/// Kernel-authored filter used to recover proposal request receipts after an
+/// application restart. The caller must know only the authoritative import
+/// source/revision, never a request id kept in ephemeral UI state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportKnowledgeProposalDiscoveryQuery {
+    pub import_source_id: String,
+    pub import_revision_id: String,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportKnowledgeProposalRequestState {
+    Pending,
+    Completed,
+}
+
+/// Durable request receipt plus its optional completed batch. `Pending` means
+/// the receipt survived before generation completed and may be retried with
+/// the exact same request input; it never means a partial batch is usable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportKnowledgeProposalDiscoveryItem {
+    pub request: ImportKnowledgeProposalRequestInput,
+    pub generation_run_id: String,
+    pub state: ImportKnowledgeProposalRequestState,
+    pub batch: Option<ImportKnowledgeProposalBatchProjection>,
+    pub proposal_count: u32,
+    pub reviewed_count: u32,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportKnowledgeProposalDiscoveryProjection {
+    pub contract_version: String,
+    pub import_source_id: String,
+    pub import_revision_id: String,
+    pub items: Vec<ImportKnowledgeProposalDiscoveryItem>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,8 +258,23 @@ pub enum ImportKnowledgeProposalError {
     InvalidEntityIdentity,
     #[error("import knowledge proposal review text is invalid")]
     InvalidReviewText,
+    #[error("import knowledge proposal discovery query is invalid")]
+    InvalidDiscoveryQuery,
     #[error("confirmed import knowledge entity is invalid: {reason}")]
     InvalidConfirmedEntity { reason: String },
+}
+
+pub fn validate_import_knowledge_proposal_discovery_query(
+    query: &ImportKnowledgeProposalDiscoveryQuery,
+) -> Result<(), ImportKnowledgeProposalError> {
+    if query.import_source_id.trim().is_empty()
+        || query.import_revision_id.trim().is_empty()
+        || query.limit == 0
+        || query.limit as usize > MAX_IMPORT_KNOWLEDGE_PROPOSAL_DISCOVERY_LIMIT
+    {
+        return Err(ImportKnowledgeProposalError::InvalidDiscoveryQuery);
+    }
+    Ok(())
 }
 
 /// Converts untrusted provider suggestions into immutable, source-grounded
@@ -295,7 +353,10 @@ pub fn plan_import_knowledge_proposals(
                 }
             })?;
             evidence.push(EvidenceRef {
-                id: format!("{proposal_id}:evidence:{index}"),
+                id: format!(
+                    "{generation_run_id}-proposal-{}-evidence-{index}",
+                    suggestion.ordinal
+                ),
                 target: EvidenceTarget::ImportContent {
                     import_source_id: source.id.clone(),
                     import_revision_id: revision.id.clone(),
@@ -849,6 +910,39 @@ mod tests {
             selected_message_ids: message_ids,
             target_scope: scope(),
             requested_at: "2026-09-01T01:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn discovery_query_requires_bounded_authoritative_source_and_revision() {
+        let valid = ImportKnowledgeProposalDiscoveryQuery {
+            import_source_id: "source-1".into(),
+            import_revision_id: "revision-1".into(),
+            limit: 1,
+        };
+        assert!(validate_import_knowledge_proposal_discovery_query(&valid).is_ok());
+        for invalid in [
+            ImportKnowledgeProposalDiscoveryQuery {
+                import_source_id: "".into(),
+                ..valid.clone()
+            },
+            ImportKnowledgeProposalDiscoveryQuery {
+                import_revision_id: " ".into(),
+                ..valid.clone()
+            },
+            ImportKnowledgeProposalDiscoveryQuery {
+                limit: 0,
+                ..valid.clone()
+            },
+            ImportKnowledgeProposalDiscoveryQuery {
+                limit: (MAX_IMPORT_KNOWLEDGE_PROPOSAL_DISCOVERY_LIMIT as u32) + 1,
+                ..valid.clone()
+            },
+        ] {
+            assert_eq!(
+                validate_import_knowledge_proposal_discovery_query(&invalid),
+                Err(ImportKnowledgeProposalError::InvalidDiscoveryQuery)
+            );
         }
     }
 

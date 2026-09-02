@@ -17,4 +17,4 @@ pub use semantic_embedding::{
     SEMANTIC_MODEL_VERSION, SemanticEmbedding, SemanticEmbeddingError, SemanticModelInstallError,
     SemanticModelPack, SemanticModelPackStatus,
 };
-pub use sqlite::SqliteStore;
+pub use sqlite::{ImportKnowledgeProposalRequestReservation, SqliteStore};

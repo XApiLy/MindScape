@@ -1885,6 +1885,311 @@ button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+.import-proposal-panel {
+  position: relative;
+  display: grid;
+  margin: 10px 12px 12px;
+  padding: 12px 12px 12px 16px;
+  gap: 9px;
+  background: rgba(203, 168, 106, 0.045);
+  border: 1px solid rgba(203, 168, 106, 0.18);
+  border-radius: 9px;
+}
+
+.import-proposal-panel::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 7px;
+  width: 1px;
+  content: "";
+  background: linear-gradient(180deg, var(--accent), rgba(203, 168, 106, 0.08));
+}
+
+.import-proposal-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.import-proposal-panel > header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #ded8cd;
+}
+
+.import-proposal-panel > header svg,
+.import-proposal-actions svg,
+.import-proposal-reviewed svg {
+  width: 12px;
+  height: 12px;
+}
+
+.import-proposal-panel > header strong {
+  font-size: 10px;
+}
+
+.import-proposal-panel > header small,
+.import-proposal-panel > p {
+  margin: 0;
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.import-proposal-request-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.import-proposal-request-controls label,
+.import-proposal-fields label,
+.import-proposal-reject-reason {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.import-proposal-request-controls select,
+.import-proposal-fields select,
+.import-proposal-fields input,
+.import-proposal-reject-reason input {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px;
+  color: #ddd8ce;
+  background: rgba(6, 7, 9, 0.42);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  font-size: 9px;
+}
+
+.import-proposal-request-controls button,
+.import-proposal-actions button,
+.import-proposal-error button {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 0 9px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: #e5d5b5;
+  background: rgba(203, 168, 106, 0.1);
+  border: 1px solid rgba(203, 168, 106, 0.26);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.import-proposal-request-controls button:disabled,
+.import-proposal-actions button:disabled {
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.025);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+
+.import-proposal-selection-count {
+  color: #b8a782 !important;
+}
+
+.import-proposal-list {
+  display: grid;
+  gap: 8px;
+}
+
+.import-proposal-card {
+  display: grid;
+  padding: 10px;
+  gap: 9px;
+  background: rgba(4, 5, 7, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+}
+
+.import-proposal-card.is-reviewed {
+  border-color: rgba(154, 194, 165, 0.2);
+}
+
+.import-proposal-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.import-proposal-card > header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #d7d2c9;
+}
+
+.import-proposal-card > header svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.import-proposal-card > header strong,
+.import-proposal-card > header small {
+  font-size: 8px;
+}
+
+.import-proposal-card > header small {
+  color: var(--dim);
+}
+
+.import-proposal-fields {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.35fr) minmax(0, 1fr);
+  gap: 7px;
+}
+
+.import-proposal-fields .is-wide {
+  grid-column: 2;
+}
+
+.import-proposal-evidence {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.import-proposal-evidence summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.import-proposal-evidence ul {
+  display: grid;
+  margin: 7px 0 0;
+  padding: 0;
+  gap: 5px;
+  list-style: none;
+}
+
+.import-proposal-evidence li {
+  display: grid;
+  padding-left: 8px;
+  gap: 2px;
+  border-left: 1px solid rgba(203, 168, 106, 0.28);
+}
+
+.import-proposal-evidence small {
+  color: #b8a782;
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+.import-proposal-evidence span {
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.import-proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.import-proposal-actions .is-reject {
+  color: #c7aaa8;
+  background: rgba(199, 140, 135, 0.05);
+  border-color: rgba(199, 140, 135, 0.18);
+}
+
+.import-proposal-reviewed {
+  display: inline-flex;
+  width: fit-content;
+  margin: 0;
+  align-items: center;
+  gap: 5px;
+  color: #a9cfb2;
+  font-size: 9px;
+}
+
+.import-proposal-error {
+  display: grid;
+  gap: 5px;
+  color: #d9a3a0;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.import-proposal-error button {
+  width: fit-content;
+  min-height: 0;
+  padding: 0;
+  color: #d6b876;
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.import-proposal-unavailable,
+.import-proposal-history-error {
+  padding: 8px !important;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+
+.import-proposal-history-error {
+  color: #d9a3a0 !important;
+}
+
+.import-proposal-history {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.import-proposal-history summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.import-proposal-history ul {
+  display: grid;
+  margin: 7px 0 0;
+  padding: 0;
+  gap: 5px;
+  list-style: none;
+}
+
+.import-proposal-history li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.import-proposal-history button {
+  padding: 0;
+  color: #d6b876;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 8px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.import-proposal-history button:disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
 .import-preview-issues {
   padding: 9px 12px;
   color: #d9a3a0;
@@ -1945,6 +2250,13 @@ button:disabled {
   gap: 7px;
 }
 
+.import-preview-message > header input {
+  width: 13px;
+  height: 13px;
+  margin: 0 1px 0 0;
+  accent-color: var(--accent);
+}
+
 .import-preview-message > header strong {
   flex: 0 0 auto;
   color: #d7d3cc;
@@ -1978,6 +2290,15 @@ button:disabled {
 .import-preview-message > header button svg {
   width: 11px;
   height: 11px;
+}
+
+.import-preview-message > header input:focus-visible,
+.import-proposal-panel select:focus-visible,
+.import-proposal-panel input:focus-visible,
+.import-proposal-panel button:focus-visible,
+.import-proposal-evidence summary:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
 }
 
 .import-preview-rendered {
@@ -3224,6 +3545,20 @@ button:disabled {
 
   .import-preview-message > header button {
     width: fit-content;
+  }
+
+  .import-proposal-request-controls,
+  .import-proposal-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .import-proposal-fields .is-wide {
+    grid-column: auto;
+  }
+
+  .import-proposal-request-controls button,
+  .import-proposal-actions button {
+    width: 100%;
   }
 
   .import-source-raw > header {

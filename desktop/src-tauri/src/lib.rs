@@ -41,6 +41,9 @@ pub fn run() {
                 )
                 .map_err(|error| io::Error::other(error.to_string()))?;
             service
+                .recover_import_knowledge_proposal_review_vault(&markdown_vault)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            service
                 .recover_knowledge_entity_delete_vault(&markdown_vault)
                 .map_err(|error| io::Error::other(error.to_string()))?;
             service
@@ -81,9 +84,15 @@ pub fn run() {
             commands::list_import_sources,
             commands::get_import_bundle,
             commands::get_raw_import_content,
+            commands::request_import_knowledge_proposals,
+            commands::get_import_knowledge_proposal_batch,
+            commands::discover_import_knowledge_proposals,
+            commands::review_import_knowledge_proposal,
+            commands::list_import_knowledge_proposal_reviews,
             commands::create_focus_frame,
             commands::get_focus_frame_query,
             commands::get_focus_promotion_candidates,
+            commands::generate_focus_promotion_candidates,
             commands::decide_focus_promotion,
             commands::get_focus_promotion_decision,
             commands::list_focus_promotion_decisions,

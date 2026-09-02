@@ -8,6 +8,9 @@ import {
   FileUp,
   LoaderCircle,
   LockKeyhole,
+  SearchCheck,
+  ShieldCheck,
+  Sparkles,
   TextCursorInput,
   X,
 } from "lucide-react";
@@ -28,10 +31,23 @@ import {
 import type {
   GenericImportCommandResult,
   ImportBundleQueryProjection,
+  ImportKnowledgeEntityProposal,
+  ImportKnowledgeProposalBatchProjection,
+  ImportKnowledgeProposalDiscoveryProjection,
+  ImportKnowledgeProposalDiscoveryQuery,
+  ImportKnowledgeProposalRequestInput,
+  ImportKnowledgeProposalReviewCommandInput,
+  ImportKnowledgeProposalReviewProjection,
   ImportedMessage,
   ImportSource,
+  KnowledgeEntityKind,
   RawImportContentProjection,
 } from "../domain";
+import {
+  buildImportKnowledgeProposalRequest,
+  buildImportKnowledgeProposalReview,
+} from "../app/importKnowledgeProposal";
+import type { ImportKnowledgeProposalTargetOption } from "../app/importKnowledgeProposalTargets";
 import { renderedMarkdownText, SafeMarkdown } from "./SafeMarkdown";
 
 type ImportMode = "file" | "paste";
@@ -44,6 +60,16 @@ type RawImportContentLoadState =
   | { kind: "error"; message: string };
 const PASTED_IMPORT_FILE_NAME = "pasted-session.txt";
 
+const KNOWLEDGE_KIND_LABEL: Record<KnowledgeEntityKind, string> = {
+  goal: "目标",
+  decision: "决策",
+  constraint: "约束",
+  question: "问题",
+  source: "来源",
+  project: "项目",
+  topic: "主题",
+};
+
 type ImportIntakeDialogProps = {
   open: boolean;
   onClose: () => void;
@@ -55,7 +81,32 @@ type ImportIntakeDialogProps = {
   importSourcesLoading?: boolean;
   onLoadImportBundle?: (sourceId: string) => Promise<ImportBundleQueryProjection>;
   onLoadRawImportContent?: (sourceId: string) => Promise<RawImportContentProjection>;
+  proposalTargetOptions?: readonly ImportKnowledgeProposalTargetOption[];
+  onRequestImportKnowledgeProposals?: (
+    input: ImportKnowledgeProposalRequestInput,
+  ) => Promise<ImportKnowledgeProposalBatchProjection>;
+  onDiscoverImportKnowledgeProposals?: (
+    query: ImportKnowledgeProposalDiscoveryQuery,
+  ) => Promise<ImportKnowledgeProposalDiscoveryProjection>;
+  onReviewImportKnowledgeProposal?: (
+    input: ImportKnowledgeProposalReviewCommandInput,
+  ) => Promise<ImportKnowledgeProposalReviewProjection>;
+  onListImportKnowledgeProposalReviews?: (
+    requestId: string,
+  ) => Promise<ImportKnowledgeProposalReviewProjection[]>;
 };
+
+type ImportProposalRequestState =
+  | { kind: "idle" }
+  | { kind: "pending"; input: ImportKnowledgeProposalRequestInput }
+  | { kind: "ready"; input: ImportKnowledgeProposalRequestInput; batch: ImportKnowledgeProposalBatchProjection }
+  | { kind: "error"; input: ImportKnowledgeProposalRequestInput; message: string };
+
+type ImportProposalReviewState =
+  | { kind: "idle" }
+  | { kind: "pending"; input: ImportKnowledgeProposalReviewCommandInput }
+  | { kind: "success"; projection: ImportKnowledgeProposalReviewProjection }
+  | { kind: "error"; input: ImportKnowledgeProposalReviewCommandInput; message: string };
 
 function CandidateBill({ candidate }: { candidate: ImportIntakeCandidate }) {
   const ready = candidate.issues.length === 0;
@@ -101,9 +152,13 @@ function ImportResultSummary({ result }: { result: GenericImportCommandResult })
 function ImportMessagePreview({
   message,
   mode,
+  selected,
+  onSelectedChange,
 }: {
   message: ImportedMessage;
   mode: MessagePreviewMode;
+  selected: boolean;
+  onSelectedChange: (selected: boolean) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const renderedRef = useRef<HTMLDivElement>(null);
@@ -125,6 +180,12 @@ function ImportMessagePreview({
     <article className="import-preview-message">
       <header>
         <span>
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={(event) => onSelectedChange(event.target.checked)}
+            aria-label={`选择来源消息：${message.sourceLocator}`}
+          />
           <strong>{importedRoleLabel(message.role)}</strong>
           <small>{message.sourceLocator}</small>
         </span>
@@ -213,17 +274,327 @@ function RawImportSourcePreview({
   );
 }
 
+function ImportKnowledgeProposalReviewCard({
+  proposal,
+  existingReview,
+  onReview,
+  onCompleted,
+}: {
+  proposal: ImportKnowledgeEntityProposal;
+  existingReview: ImportKnowledgeProposalReviewProjection | null;
+  onReview?: (input: ImportKnowledgeProposalReviewCommandInput) => Promise<ImportKnowledgeProposalReviewProjection>;
+  onCompleted: (projection: ImportKnowledgeProposalReviewProjection) => void;
+}) {
+  const [kind, setKind] = useState<KnowledgeEntityKind>(proposal.suggestedKind);
+  const [name, setName] = useState(proposal.suggestedName);
+  const [aliases, setAliases] = useState(proposal.suggestedAliases.join("，"));
+  const [rejectReason, setRejectReason] = useState("");
+  const [reviewState, setReviewState] = useState<ImportProposalReviewState>({ kind: "idle" });
+  const finalReview = reviewState.kind === "success" ? reviewState.projection : existingReview;
+  const busy = reviewState.kind === "pending";
+
+  const review = async (
+    action: "confirm" | "reject",
+    retryInput?: ImportKnowledgeProposalReviewCommandInput,
+  ) => {
+    if (!onReview || busy || finalReview) return;
+    const input = retryInput ?? buildImportKnowledgeProposalReview(
+      proposal,
+      action === "confirm"
+        ? { action: "confirm", kind, name, aliases: aliases.split(/[，,]/) }
+        : { action: "reject", reason: rejectReason },
+      `import-knowledge-decision-${crypto.randomUUID()}`,
+      new Date().toISOString(),
+    );
+    if (input.choice.action === "confirm" && !input.choice.name) return;
+
+    setReviewState({ kind: "pending", input });
+    try {
+      const projection = await onReview(input);
+      setReviewState({ kind: "success", projection });
+      onCompleted(projection);
+    } catch (error) {
+      setReviewState({
+        kind: "error",
+        input,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  return (
+    <article className={`import-proposal-card${finalReview ? " is-reviewed" : ""}`}>
+      <header>
+        <span><SearchCheck aria-hidden="true" /><strong>知识建议</strong></span>
+        <small>revision {proposal.proposalRevision} · {proposal.evidence.length} 条来源</small>
+      </header>
+      <div className="import-proposal-fields">
+        <label>
+          <span>类型</span>
+          <select value={kind} disabled={Boolean(finalReview) || busy} onChange={(event) => setKind(event.target.value as KnowledgeEntityKind)}>
+            {(Object.entries(KNOWLEDGE_KIND_LABEL) as Array<[KnowledgeEntityKind, string]>).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="is-wide">
+          <span>名称</span>
+          <input value={name} disabled={Boolean(finalReview) || busy} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label className="is-wide">
+          <span>别名</span>
+          <input value={aliases} disabled={Boolean(finalReview) || busy} onChange={(event) => setAliases(event.target.value)} placeholder="使用逗号分隔" />
+        </label>
+      </div>
+      <details className="import-proposal-evidence">
+        <summary>查看不可修改的来源证据</summary>
+        <ul>
+          {proposal.evidence.map((evidence) => (
+            <li key={evidence.id}>
+              <small>{evidence.target.type === "importContent" ? evidence.target.locator : evidence.target.type}</small>
+              <span>{evidence.excerpt ?? "该 EvidenceRef 没有可显示摘要。"}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+      {finalReview ? (
+        <p className="import-proposal-reviewed" role="status">
+          <ShieldCheck aria-hidden="true" />
+          {finalReview.action === "confirm"
+            ? finalReview.entityStatus === "candidate" ? "已创建分支候选知识" : "已确认到会话知识"
+            : "已否决此建议"}
+        </p>
+      ) : (
+        <>
+          <label className="import-proposal-reject-reason">
+            <span>否决原因（可选）</span>
+            <input value={rejectReason} disabled={busy} onChange={(event) => setRejectReason(event.target.value)} placeholder="例如：内容过时或不构成可复用知识" />
+          </label>
+          <div className="import-proposal-actions">
+            <button type="button" disabled={!onReview || busy || !name.trim()} onClick={() => void review("confirm")}>
+              {busy && reviewState.input.choice.action === "confirm" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
+              确认并创建知识
+            </button>
+            <button className="is-reject" type="button" disabled={!onReview || busy} onClick={() => void review("reject")}>否决建议</button>
+          </div>
+        </>
+      )}
+      {reviewState.kind === "error" ? (
+        <div className="import-proposal-error" role="alert">
+          <span>审核失败：{reviewState.message}</span>
+          <button type="button" onClick={() => void review(reviewState.input.choice.action, reviewState.input)}>使用同一决定重试</button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function ImportKnowledgeProposalPanel({
+  bundle,
+  selectedMessageIds,
+  targetOptions,
+  onRequest,
+  onDiscover,
+  onReview,
+  onListReviews,
+}: {
+  bundle: ImportBundleQueryProjection;
+  selectedMessageIds: readonly string[];
+  targetOptions: readonly ImportKnowledgeProposalTargetOption[];
+  onRequest?: (input: ImportKnowledgeProposalRequestInput) => Promise<ImportKnowledgeProposalBatchProjection>;
+  onDiscover?: (query: ImportKnowledgeProposalDiscoveryQuery) => Promise<ImportKnowledgeProposalDiscoveryProjection>;
+  onReview?: (input: ImportKnowledgeProposalReviewCommandInput) => Promise<ImportKnowledgeProposalReviewProjection>;
+  onListReviews?: (requestId: string) => Promise<ImportKnowledgeProposalReviewProjection[]>;
+}) {
+  const [targetId, setTargetId] = useState(targetOptions[0]?.id ?? "");
+  const [requestState, setRequestState] = useState<ImportProposalRequestState>({ kind: "idle" });
+  const [reviews, setReviews] = useState<ImportKnowledgeProposalReviewProjection[]>([]);
+  const [discovery, setDiscovery] = useState<ImportKnowledgeProposalDiscoveryProjection | null>(null);
+  const [discoveryState, setDiscoveryState] = useState<"idle" | "loading" | "error">("idle");
+  const [reviewHistoryError, setReviewHistoryError] = useState<string | null>(null);
+  const target = targetOptions.find((option) => option.id === targetId) ?? targetOptions[0];
+  const busy = requestState.kind === "pending";
+  const currentSelectionKey = [...selectedMessageIds].sort().join("\u0000");
+  const persistedSelectionKey = requestState.kind === "ready"
+    ? requestState.input.selectedMessageIds.join("\u0000")
+    : null;
+  const targetChanged = requestState.kind === "ready"
+    ? JSON.stringify(requestState.input.targetScope) !== JSON.stringify(target?.scope)
+    : false;
+  const selectionChanged = requestState.kind === "ready"
+    ? persistedSelectionKey !== currentSelectionKey || targetChanged
+    : true;
+
+  const loadReviews = async (requestId: string) => {
+    if (!onListReviews) return;
+    setReviewHistoryError(null);
+    try {
+      setReviews(await onListReviews(requestId));
+    } catch (error) {
+      setReviewHistoryError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  useEffect(() => {
+    if (!onDiscover) return;
+    let cancelled = false;
+    setDiscoveryState("loading");
+    void onDiscover({
+      importSourceId: bundle.source.id,
+      importRevisionId: bundle.revision.id,
+      limit: 8,
+    }).then((result) => {
+      if (cancelled) return;
+      setDiscovery(result);
+      setDiscoveryState("idle");
+    }).catch(() => {
+      if (!cancelled) setDiscoveryState("error");
+    });
+    return () => { cancelled = true; };
+  }, [bundle.revision.id, bundle.source.id, onDiscover]);
+
+  const requestProposals = async (retryInput?: ImportKnowledgeProposalRequestInput) => {
+    if (
+      !onRequest
+      || busy
+      || (!retryInput && (!target || selectedMessageIds.length === 0))
+    ) return;
+    const input = retryInput ?? buildImportKnowledgeProposalRequest(
+      bundle,
+      selectedMessageIds,
+      target!.scope,
+      `import-knowledge-request-${crypto.randomUUID()}`,
+      new Date().toISOString(),
+    );
+    setRequestState({ kind: "pending", input });
+    try {
+      const batch = await onRequest(input);
+      setRequestState({ kind: "ready", input, batch });
+      setReviews([]);
+      void loadReviews(batch.requestId);
+    } catch (error) {
+      setRequestState({
+        kind: "error",
+        input,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const batch = requestState.kind === "ready" ? requestState.batch : null;
+
+  return (
+    <section className="import-proposal-panel" aria-label="从导入来源生成知识建议">
+      <header>
+        <span><Sparkles aria-hidden="true" /><strong>从来源提炼知识</strong></span>
+        <small>只有点击后才会启动分析</small>
+      </header>
+      <p>勾选下方消息并选择知识落点。内核会固定原文来源；建议审核前不会进入知识库、检索或分支回流。</p>
+      <div className="import-proposal-request-controls">
+        <label>
+          <span>知识落点</span>
+          <select value={target?.id ?? ""} disabled={busy || targetOptions.length === 0} onChange={(event) => setTargetId(event.target.value)}>
+            {targetOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={!onRequest || !target || busy || selectedMessageIds.length === 0 || (requestState.kind === "ready" && !selectionChanged)}
+          onClick={() => void requestProposals()}
+        >
+          {busy ? <LoaderCircle className="spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
+          {busy
+            ? "正在生成建议…"
+            : requestState.kind === "ready"
+              ? selectionChanged ? "按当前选择重新生成" : "建议已生成"
+              : "生成知识建议"}
+        </button>
+      </div>
+      <p className="import-proposal-selection-count">已选择 {selectedMessageIds.length} / {bundle.messages.length} 条来源消息</p>
+      {!onRequest ? <p className="import-proposal-unavailable">本地内核尚未提供提案命令；当前只展示正式交互边界。</p> : null}
+      {discoveryState === "loading" ? <p className="import-proposal-history" role="status">正在恢复此来源的提案记录…</p> : null}
+      {discoveryState === "error" ? <p className="import-proposal-history-error" role="alert">提案记录恢复失败；仍可使用当前来源重新生成。</p> : null}
+      {discoveryState === "idle" && discovery && discovery.items.length > 0 ? (
+        <details className="import-proposal-history">
+          <summary>已恢复 {discovery.items.length} 次提案请求</summary>
+          <ul>
+            {discovery.items.map((item) => (
+              <li key={item.request.requestId}>
+                <span>{item.state === "completed" ? "已生成" : "等待生成"} · {item.proposalCount} 条建议 · {item.reviewedCount} 条已审核</span>
+                {item.state === "completed" && item.batch ? (
+                  <button type="button" onClick={() => {
+                    setRequestState({ kind: "ready", input: item.request, batch: item.batch! });
+                    setReviews([]);
+                    void loadReviews(item.request.requestId);
+                  }}>恢复查看</button>
+                ) : <button type="button" disabled>等待重试</button>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {requestState.kind === "error" ? (
+        <div className="import-proposal-error" role="alert">
+          <span>知识建议生成失败：{requestState.message}</span>
+          <button type="button" onClick={() => void requestProposals(requestState.input)}>使用同一请求重试</button>
+        </div>
+      ) : null}
+      {batch ? batch.proposals.length ? (
+        <>
+          {!onReview ? <p className="import-proposal-unavailable">建议已返回，但本地内核尚未提供审核命令。</p> : null}
+          <div className="import-proposal-list">
+            {batch.proposals.map((proposal) => (
+              <ImportKnowledgeProposalReviewCard
+                key={proposal.proposalId}
+                proposal={proposal}
+                existingReview={reviews.find((review) => review.proposalId === proposal.proposalId) ?? null}
+                onReview={onReview}
+                onCompleted={(projection) => setReviews((current) => [
+                  projection,
+                  ...current.filter((review) => review.proposalId !== projection.proposalId),
+                ])}
+              />
+            ))}
+          </div>
+        </>
+      ) : (
+        <p className="import-proposal-unavailable">本次分析没有返回可审核建议；原文和选择保持不变。</p>
+      ) : null}
+      {reviewHistoryError ? <p className="import-proposal-history-error">审核记录恢复失败：{reviewHistoryError}</p> : null}
+    </section>
+  );
+}
+
 function ImportBundlePreview({
   bundle,
   rawContentState,
   onRetryRawContent,
+  proposalTargetOptions,
+  onRequestImportKnowledgeProposals,
+  onDiscoverImportKnowledgeProposals,
+  onReviewImportKnowledgeProposal,
+  onListImportKnowledgeProposalReviews,
 }: {
   bundle: ImportBundleQueryProjection;
   rawContentState: RawImportContentLoadState;
   onRetryRawContent: () => void;
+  proposalTargetOptions: readonly ImportKnowledgeProposalTargetOption[];
+  onRequestImportKnowledgeProposals?: (
+    input: ImportKnowledgeProposalRequestInput,
+  ) => Promise<ImportKnowledgeProposalBatchProjection>;
+  onDiscoverImportKnowledgeProposals?: (
+    query: ImportKnowledgeProposalDiscoveryQuery,
+  ) => Promise<ImportKnowledgeProposalDiscoveryProjection>;
+  onReviewImportKnowledgeProposal?: (
+    input: ImportKnowledgeProposalReviewCommandInput,
+  ) => Promise<ImportKnowledgeProposalReviewProjection>;
+  onListImportKnowledgeProposalReviews?: (
+    requestId: string,
+  ) => Promise<ImportKnowledgeProposalReviewProjection[]>;
 }) {
   const [previewMode, setPreviewMode] = useState<ImportPreviewMode>("rendered");
   const [visibleMessageCount, setVisibleMessageCount] = useState(IMPORT_PREVIEW_PAGE_SIZE);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const issues = [...bundle.report.errors, ...bundle.report.warnings];
   const visibleMessages = bundle.messages.slice(0, visibleMessageCount);
 
@@ -269,12 +640,32 @@ function ImportBundlePreview({
         </details>
       ) : null}
 
+      {previewMode !== "source" ? (
+        <ImportKnowledgeProposalPanel
+          bundle={bundle}
+          selectedMessageIds={selectedMessageIds}
+          targetOptions={proposalTargetOptions}
+          onRequest={onRequestImportKnowledgeProposals}
+          onDiscover={onDiscoverImportKnowledgeProposals}
+          onReview={onReviewImportKnowledgeProposal}
+          onListReviews={onListImportKnowledgeProposalReviews}
+        />
+      ) : null}
+
       {previewMode === "source" ? (
         <RawImportSourcePreview state={rawContentState} onRetry={onRetryRawContent} />
       ) : visibleMessages.length ? (
         <div className="import-preview-messages">
           {visibleMessages.map((message) => (
-            <ImportMessagePreview key={message.id} message={message} mode={previewMode} />
+            <ImportMessagePreview
+              key={message.id}
+              message={message}
+              mode={previewMode}
+              selected={selectedMessageIds.includes(message.id)}
+              onSelectedChange={(selected) => setSelectedMessageIds((current) => selected
+                ? [...current, message.id]
+                : current.filter((messageId) => messageId !== message.id))}
+            />
           ))}
         </div>
       ) : (
@@ -302,6 +693,11 @@ export function ImportIntakeDialog({
   importSourcesLoading = false,
   onLoadImportBundle,
   onLoadRawImportContent,
+  proposalTargetOptions = [],
+  onRequestImportKnowledgeProposals,
+  onDiscoverImportKnowledgeProposals,
+  onReviewImportKnowledgeProposal,
+  onListImportKnowledgeProposalReviews,
 }: ImportIntakeDialogProps) {
   const [mode, setMode] = useState<ImportMode>("file");
   const [fileCandidate, setFileCandidate] = useState<ImportIntakeCandidate | null>(null);
@@ -410,9 +806,9 @@ export function ImportIntakeDialog({
         UI-HANDOFF-06
         位置：Chat 工作区的“导入已有 AI 会话”模态入口与预检内容区
         用途：确认文件/粘贴来源，提交给本地内核，并区分安全渲染、内容块 Markdown 与受控源文件原文
-        数据/IPC：onImportGenericFile / onLoadImportBundle / onLoadRawImportContent 分别消费 typed import_generic_file / get_import_bundle / get_raw_import_content；前端不接收或拼接 storageRef 路径
-        状态：正常显示候选、分页消息和受控原文；加载分别显示解析/Bundle/原文读取；空白显示无来源/无消息/空文本；错误隔离显示导入、ParseReport 或原文校验错误；截断明示完整字节数和复制范围；失败可重试
-        交互约束：保持 dialog、拖放、文件选择、模式切换和关闭焦点路径；不读 SQLite/raw storage、不调用模型、不记录 Key
+        数据/IPC：除 import/get bundle/raw 外，显式消费 request/get/review/list import knowledge proposal typed IPC；前端不接收或拼接 storageRef、EvidenceRef 或 entity ID
+        状态：覆盖来源选择、建议 pending/empty/error/success、审核 Confirm/Reject、同 requestId/decisionId 重试和记录恢复；失败状态彼此隔离
+        交互约束：导入不自动分析；只有用户勾选消息并点击才请求建议；target scope 只来自权威 conversation/Active FocusFrame 投影；不读 SQLite/raw storage、不记录 Key
         可替换范围：员工06可替换模态布局、来源卡片、预览分页、状态视觉和动效
         不可改变：ImportCandidate/ParseReport/ImportBundle/RawImportContentProjection 契约、typed IPC 参数、路径不可见、raw/renderer/复制分层、测试选择器和原文不执行边界
       */}
@@ -510,6 +906,11 @@ export function ImportIntakeDialog({
               bundle={bundleResult}
               rawContentState={rawContentState}
               onRetryRawContent={() => void retryRawContent()}
+              proposalTargetOptions={proposalTargetOptions}
+              onRequestImportKnowledgeProposals={onRequestImportKnowledgeProposals}
+              onDiscoverImportKnowledgeProposals={onDiscoverImportKnowledgeProposals}
+              onReviewImportKnowledgeProposal={onReviewImportKnowledgeProposal}
+              onListImportKnowledgeProposalReviews={onListImportKnowledgeProposalReviews}
             />
           ) : null}
 

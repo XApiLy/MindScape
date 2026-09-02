@@ -15,9 +15,9 @@ use crate::{
         SemanticModelInstallError, SemanticModelPack, SemanticModelPackStatus,
         parse_generic_import,
         provider::{
-            MockProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
-            ProviderConnectionTestResult, ProviderDescriptor, ProviderRegistry, ProviderRuntime,
-            ProviderRuntimeError, RunCancellation,
+            DeterministicImportKnowledgeSuggestionProducer, MockProvider, OpenAiCompatibleConfig,
+            OpenAiCompatibleProvider, ProviderConnectionTestResult, ProviderDescriptor,
+            ProviderRegistry, ProviderRuntime, ProviderRuntimeError, RunCancellation,
         },
     },
     application::KernelService,
@@ -25,10 +25,14 @@ use crate::{
         AppendTurnInput, CanvasViewportState, CompleteTurnInput, ContextSnapshot, Conversation,
         ConversationGraph, ConversationNode, CreateConversationInput, CredentialError,
         CredentialRef, FocusFrameLifecycleCommandInput, FocusFrameLifecycleSnapshot,
-        FocusFrameQueryProjection, FocusPromotionDecisionCommandInput,
-        FocusPromotionDecisionProjection, FocusedContextSnapshot, KernelBootstrap, KernelError,
-        RunState, SaveCanvasViewportInput, SetCredentialInput, StartModelRunInput,
-        UpdateNodePositionInput,
+        FocusFrameQueryProjection, FocusPromotionCandidateGenerationCommandInput,
+        FocusPromotionCandidateGenerationProjection, FocusPromotionDecisionCommandInput,
+        FocusPromotionDecisionProjection, FocusedContextSnapshot,
+        ImportKnowledgeProposalBatchProjection, ImportKnowledgeProposalDiscoveryProjection,
+        ImportKnowledgeProposalDiscoveryQuery, ImportKnowledgeProposalRequestInput,
+        ImportKnowledgeProposalReviewCommandInput, ImportKnowledgeProposalReviewProjection,
+        KernelBootstrap, KernelError, RunState, SaveCanvasViewportInput, SetCredentialInput,
+        StartModelRunInput, UpdateNodePositionInput,
         contracts::{
             DiscussionLog, DiscussionLogProjection, FocusFrame, FocusPromotionCandidateSet,
             ImportRevision, ImportSource, ImportedMessage, ModelRunEvent, ModelRunEventEnvelope,
@@ -45,6 +49,7 @@ pub struct KernelState {
     markdown_vault: MarkdownVault,
     credentials: CredentialService,
     provider_runtime: ProviderRuntime,
+    import_knowledge_suggestion_producer: DeterministicImportKnowledgeSuggestionProducer,
     active_runs: Arc<Mutex<HashMap<String, RunCancellation>>>,
     semantic_model_pack: SemanticModelPack,
     semantic_model_installing: Arc<AtomicBool>,
@@ -78,6 +83,7 @@ impl KernelState {
             markdown_vault,
             credentials,
             provider_runtime: ProviderRuntime::new(registry),
+            import_knowledge_suggestion_producer: DeterministicImportKnowledgeSuggestionProducer,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
             semantic_model_pack,
             semantic_model_installing: Arc::new(AtomicBool::new(false)),
@@ -520,6 +526,61 @@ pub fn get_raw_import_content(
 }
 
 #[tauri::command]
+pub fn request_import_knowledge_proposals(
+    state: State<'_, KernelState>,
+    input: ImportKnowledgeProposalRequestInput,
+) -> CommandResult<ImportKnowledgeProposalBatchProjection> {
+    state
+        .service
+        .request_import_knowledge_proposals(input, &state.import_knowledge_suggestion_producer)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_import_knowledge_proposal_batch(
+    state: State<'_, KernelState>,
+    request_id: String,
+) -> CommandResult<ImportKnowledgeProposalBatchProjection> {
+    state
+        .service
+        .get_import_knowledge_proposal_batch(&request_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn discover_import_knowledge_proposals(
+    state: State<'_, KernelState>,
+    query: ImportKnowledgeProposalDiscoveryQuery,
+) -> CommandResult<ImportKnowledgeProposalDiscoveryProjection> {
+    state
+        .service
+        .discover_import_knowledge_proposals(query)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn review_import_knowledge_proposal(
+    state: State<'_, KernelState>,
+    input: ImportKnowledgeProposalReviewCommandInput,
+) -> CommandResult<ImportKnowledgeProposalReviewProjection> {
+    state
+        .service
+        .review_import_knowledge_proposal(&state.markdown_vault, input)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_import_knowledge_proposal_reviews(
+    state: State<'_, KernelState>,
+    request_id: String,
+) -> CommandResult<Vec<ImportKnowledgeProposalReviewProjection>> {
+    state
+        .service
+        .list_import_knowledge_proposal_reviews(&request_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn create_focus_frame(
     state: State<'_, KernelState>,
     frame: FocusFrame,
@@ -547,6 +608,17 @@ pub fn get_focus_promotion_candidates(
     state
         .service
         .get_focus_promotion_candidates(&focus_frame_id, expected_memory_version)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn generate_focus_promotion_candidates(
+    state: State<'_, KernelState>,
+    input: FocusPromotionCandidateGenerationCommandInput,
+) -> CommandResult<FocusPromotionCandidateGenerationProjection> {
+    state
+        .service
+        .generate_focus_promotion_candidates(input)
         .map_err(Into::into)
 }
 

@@ -16,11 +16,19 @@ import type {
   FocusFrame,
   FocusFrameLifecycleCommandInput,
   FocusPromotionCandidateSet,
+  FocusPromotionCandidateGenerationCommandInput,
+  FocusPromotionCandidateGenerationProjection,
   FocusPromotionDecisionCommandInput,
   FocusPromotionDecisionProjection,
   FocusFrameQueryResult,
   GenericImportCommandResult,
   ImportBundleQueryProjection,
+  ImportKnowledgeProposalBatchProjection,
+  ImportKnowledgeProposalDiscoveryProjection,
+  ImportKnowledgeProposalDiscoveryQuery,
+  ImportKnowledgeProposalRequestInput,
+  ImportKnowledgeProposalReviewCommandInput,
+  ImportKnowledgeProposalReviewProjection,
   ImportGenericFileInput,
   ImportSource,
   KernelBootstrap,
@@ -60,6 +68,16 @@ export const kernelClient = {
     invoke<ImportBundleQueryProjection>("get_import_bundle", { sourceId }),
   getRawImportContent: (sourceId: string) =>
     invoke<RawImportContentProjection>("get_raw_import_content", { sourceId }),
+  requestImportKnowledgeProposals: (input: ImportKnowledgeProposalRequestInput) =>
+    invoke<ImportKnowledgeProposalBatchProjection>("request_import_knowledge_proposals", { input }),
+  getImportKnowledgeProposalBatch: (requestId: string) =>
+    invoke<ImportKnowledgeProposalBatchProjection>("get_import_knowledge_proposal_batch", { requestId }),
+  discoverImportKnowledgeProposals: (query: ImportKnowledgeProposalDiscoveryQuery) =>
+    invoke<ImportKnowledgeProposalDiscoveryProjection>("discover_import_knowledge_proposals", { query }),
+  reviewImportKnowledgeProposal: (input: ImportKnowledgeProposalReviewCommandInput) =>
+    invoke<ImportKnowledgeProposalReviewProjection>("review_import_knowledge_proposal", { input }),
+  listImportKnowledgeProposalReviews: (requestId: string) =>
+    invoke<ImportKnowledgeProposalReviewProjection[]>("list_import_knowledge_proposal_reviews", { requestId }),
   createFocusFrame: (frame: FocusFrame) =>
     invoke<CreateFocusFrameResult>("create_focus_frame", { frame }),
   getFocusFrameQuery: (focusFrameId: string) =>
@@ -71,6 +89,10 @@ export const kernelClient = {
     invoke<FocusPromotionCandidateSet | null>("get_focus_promotion_candidates", {
       focusFrameId,
       expectedMemoryVersion,
+    }),
+  generateFocusPromotionCandidates: (input: FocusPromotionCandidateGenerationCommandInput) =>
+    invoke<FocusPromotionCandidateGenerationProjection>("generate_focus_promotion_candidates", {
+      input,
     }),
   decideFocusPromotion: (input: FocusPromotionDecisionCommandInput) =>
     invoke<FocusPromotionDecisionProjection>("decide_focus_promotion", { input }),

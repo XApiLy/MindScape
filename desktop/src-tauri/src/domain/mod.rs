@@ -56,13 +56,17 @@ pub use focused_context::{
 };
 pub use import_knowledge_proposal::{
     IMPORT_KNOWLEDGE_PROPOSAL_CONTRACT_VERSION, ImportKnowledgeEntityProposal,
-    ImportKnowledgeProposalBatchProjection, ImportKnowledgeProposalError,
-    ImportKnowledgeProposalRequestInput, ImportKnowledgeProposalReviewAction,
+    ImportKnowledgeProposalBatchProjection, ImportKnowledgeProposalDiscoveryItem,
+    ImportKnowledgeProposalDiscoveryProjection, ImportKnowledgeProposalDiscoveryQuery,
+    ImportKnowledgeProposalError, ImportKnowledgeProposalRequestInput,
+    ImportKnowledgeProposalRequestState, ImportKnowledgeProposalReviewAction,
     ImportKnowledgeProposalReviewChoice, ImportKnowledgeProposalReviewCommandInput,
     ImportKnowledgeProposalReviewPlan, ImportKnowledgeProposalReviewProjection,
     ImportKnowledgeProposalTargetContext, ImportKnowledgeSourceSnapshot,
-    ImportKnowledgeSuggestionDraft, plan_import_knowledge_proposal_review,
-    plan_import_knowledge_proposals, validate_import_knowledge_proposal_request_replay,
+    ImportKnowledgeSuggestionDraft, MAX_IMPORT_KNOWLEDGE_PROPOSAL_DISCOVERY_LIMIT,
+    plan_import_knowledge_proposal_review, plan_import_knowledge_proposals,
+    validate_import_knowledge_proposal_discovery_query,
+    validate_import_knowledge_proposal_request_replay,
     validate_import_knowledge_proposal_review_replay,
 };
 pub use imports::{ImportBundleValidationError, validate_import_bundle};

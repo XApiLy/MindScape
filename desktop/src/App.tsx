@@ -54,10 +54,18 @@ import type {
   FocusFrame,
   FocusFrameLifecycleCommandInput,
   FocusPromotionCandidateSet,
+  FocusPromotionCandidateGenerationCommandInput,
+  FocusPromotionCandidateGenerationProjection,
   FocusPromotionDecisionCommandInput,
   FocusPromotionDecisionProjection,
   GenericImportCommandResult,
   ImportBundleQueryProjection,
+  ImportKnowledgeProposalBatchProjection,
+  ImportKnowledgeProposalDiscoveryProjection,
+  ImportKnowledgeProposalDiscoveryQuery,
+  ImportKnowledgeProposalRequestInput,
+  ImportKnowledgeProposalReviewCommandInput,
+  ImportKnowledgeProposalReviewProjection,
   ImportSource,
   KnowledgeEntity,
   KnowledgeRelation,
@@ -930,6 +938,60 @@ export function App() {
     }
   };
 
+  const requestImportKnowledgeProposals = async (
+    input: ImportKnowledgeProposalRequestInput,
+  ): Promise<ImportKnowledgeProposalBatchProjection> => {
+    if (mode !== "tauri") throw new Error("浏览器预览不会分析本地导入来源。");
+    try {
+      return await kernelClient.requestImportKnowledgeProposals(input);
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+  };
+
+  const discoverImportKnowledgeProposals = async (
+    query: ImportKnowledgeProposalDiscoveryQuery,
+  ): Promise<ImportKnowledgeProposalDiscoveryProjection> => {
+    if (mode !== "tauri") throw new Error("浏览器预览不会读取本地提案记录。");
+    try {
+      return await kernelClient.discoverImportKnowledgeProposals(query);
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+  };
+
+  const reviewImportKnowledgeProposal = async (
+    input: ImportKnowledgeProposalReviewCommandInput,
+  ): Promise<ImportKnowledgeProposalReviewProjection> => {
+    if (mode !== "tauri") throw new Error("浏览器预览不会提交本地知识审核。");
+    let projection: ImportKnowledgeProposalReviewProjection;
+    try {
+      projection = await kernelClient.reviewImportKnowledgeProposal(input);
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+    if (projection.action === "confirm") {
+      try {
+        await reloadKnowledge();
+        setNotice(projection.entityStatus === "candidate" ? "分支候选知识已创建。" : "会话知识已确认。");
+      } catch {
+        setNotice("知识审核已保存，但知识库存刷新失败；请刷新后继续，不要重复提交。");
+      }
+    }
+    return projection;
+  };
+
+  const listImportKnowledgeProposalReviews = async (
+    requestId: string,
+  ): Promise<ImportKnowledgeProposalReviewProjection[]> => {
+    if (mode !== "tauri") return [];
+    try {
+      return await kernelClient.listImportKnowledgeProposalReviews(requestId);
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+  };
+
   const reloadKnowledge = async () => {
     if (mode !== "tauri") {
       throw new Error("浏览器预览不会读取本地知识对象。");
@@ -1127,6 +1189,33 @@ export function App() {
       throw new Error(safeErrorMessage(error));
     }
   }, [mode]);
+
+  const generateFocusPromotionCandidates = async (
+    input: FocusPromotionCandidateGenerationCommandInput,
+  ): Promise<FocusPromotionCandidateGenerationProjection> => {
+    if (mode !== "tauri") {
+      throw new Error("浏览器预览不会提交本地回流候选。");
+    }
+
+    let projection: FocusPromotionCandidateGenerationProjection;
+    try {
+      projection = await kernelClient.generateFocusPromotionCandidates(input);
+    } catch (error) {
+      throw new Error(safeErrorMessage(error));
+    }
+
+    try {
+      const query = await kernelClient.getFocusFrameQuery(input.focusFrameId);
+      const projected = projectFocusFrameQuery(query);
+      if (!projected) throw new Error("FocusFrame 查询结果无法投影。");
+      updateFocusFrameProjection(projected);
+      setNotice(`已保存 ${projection.candidateRefs.length} 条回流候选。`);
+    } catch {
+      setNotice("回流候选已保存，但 FocusFrame 状态刷新失败；请刷新后继续，不要重复提交。");
+    }
+
+    return projection;
+  };
 
   const decideFocusPromotion = async (
     input: FocusPromotionDecisionCommandInput,
@@ -1346,6 +1435,7 @@ export function App() {
         onRetrieveKnowledge={mode === "tauri" ? retrieveKnowledgeForNode : undefined}
         focusFrameQueryByNodeId={focusFrameQueryByNodeId}
         focusFrameQueryError={focusFrameQueryError}
+        onGenerateFocusPromotionCandidates={mode === "tauri" ? generateFocusPromotionCandidates : undefined}
         onLoadFocusPromotionCandidates={mode === "tauri" ? loadFocusPromotionCandidates : undefined}
         onDecideFocusPromotion={mode === "tauri" ? decideFocusPromotion : undefined}
         onLoadFocusPromotionDecisions={mode === "tauri" ? loadFocusPromotionDecisions : undefined}
@@ -1379,6 +1469,10 @@ export function App() {
         onImportGenericFile={mode === "tauri" ? importGenericFile : undefined}
         onLoadImportBundle={mode === "tauri" ? loadImportBundle : undefined}
         onLoadRawImportContent={mode === "tauri" ? loadRawImportContent : undefined}
+        onRequestImportKnowledgeProposals={mode === "tauri" ? requestImportKnowledgeProposals : undefined}
+        onDiscoverImportKnowledgeProposals={mode === "tauri" ? discoverImportKnowledgeProposals : undefined}
+        onReviewImportKnowledgeProposal={mode === "tauri" ? reviewImportKnowledgeProposal : undefined}
+        onListImportKnowledgeProposalReviews={mode === "tauri" ? listImportKnowledgeProposalReviews : undefined}
         onCreateFocusFrame={mode === "tauri" ? createFocusFrameForNode : undefined}
         onTransitionFocusFrame={mode === "tauri" ? transitionFocusFrame : undefined}
         onReloadFocusFrames={mode === "tauri" ? reloadFocusFrames : undefined}

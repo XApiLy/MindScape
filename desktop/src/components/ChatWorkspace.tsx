@@ -21,6 +21,7 @@ import {
 import { presentProviderError, type ChatRunState } from "../app/chatRunState";
 import { shouldFollowLatest } from "../app/chatScrollFollow";
 import { projectChatTimeline } from "../app/chatTimeline";
+import { buildImportKnowledgeProposalTargets } from "../app/importKnowledgeProposalTargets";
 import { blocksToMarkdown } from "../app/markdownContent";
 import { presentMissingNodeAnswer } from "../app/nodeAnswerPresentation";
 import type { ChatModelOption } from "../app/providerCatalog";
@@ -36,10 +37,18 @@ import type {
   ConversationNode,
   EffectiveRunProfile,
   FocusPromotionCandidateSet,
+  FocusPromotionCandidateGenerationCommandInput,
+  FocusPromotionCandidateGenerationProjection,
   FocusPromotionDecisionCommandInput,
   FocusPromotionDecisionProjection,
   GenericImportCommandResult,
   ImportBundleQueryProjection,
+  ImportKnowledgeProposalBatchProjection,
+  ImportKnowledgeProposalDiscoveryProjection,
+  ImportKnowledgeProposalDiscoveryQuery,
+  ImportKnowledgeProposalRequestInput,
+  ImportKnowledgeProposalReviewCommandInput,
+  ImportKnowledgeProposalReviewProjection,
   ImportSource,
   KnowledgeEntity,
   KnowledgeRelation,
@@ -113,6 +122,18 @@ type ChatWorkspaceProps = {
   ) => Promise<CanvasKnowledgeRetrievalProjection>;
   onLoadImportBundle?: (sourceId: string) => Promise<ImportBundleQueryProjection>;
   onLoadRawImportContent?: (sourceId: string) => Promise<RawImportContentProjection>;
+  onRequestImportKnowledgeProposals?: (
+    input: ImportKnowledgeProposalRequestInput,
+  ) => Promise<ImportKnowledgeProposalBatchProjection>;
+  onDiscoverImportKnowledgeProposals?: (
+    query: ImportKnowledgeProposalDiscoveryQuery,
+  ) => Promise<ImportKnowledgeProposalDiscoveryProjection>;
+  onReviewImportKnowledgeProposal?: (
+    input: ImportKnowledgeProposalReviewCommandInput,
+  ) => Promise<ImportKnowledgeProposalReviewProjection>;
+  onListImportKnowledgeProposalReviews?: (
+    requestId: string,
+  ) => Promise<ImportKnowledgeProposalReviewProjection[]>;
   onCreateFocusFrame?: (
     node: ConversationNode,
     objective: string,
@@ -121,6 +142,9 @@ type ChatWorkspaceProps = {
     action: "close" | "reopen",
     query: CanvasFocusFrameQueryProjection,
   ) => Promise<CanvasFocusFrameQueryProjection>;
+  onGenerateFocusPromotionCandidates?: (
+    input: FocusPromotionCandidateGenerationCommandInput,
+  ) => Promise<FocusPromotionCandidateGenerationProjection>;
   focusFrameQueryByNodeId: ReadonlyMap<string, CanvasFocusFrameQueryProjection>;
   focusFrameQueryError: string | null;
   onLoadFocusPromotionCandidates?: (
@@ -626,8 +650,13 @@ export function ChatWorkspace({
   onRetrieveKnowledge,
   onLoadImportBundle,
   onLoadRawImportContent,
+  onRequestImportKnowledgeProposals,
+  onDiscoverImportKnowledgeProposals,
+  onReviewImportKnowledgeProposal,
+  onListImportKnowledgeProposalReviews,
   onCreateFocusFrame,
   onTransitionFocusFrame,
+  onGenerateFocusPromotionCandidates,
   focusFrameQueryByNodeId,
   focusFrameQueryError,
   onLoadFocusPromotionCandidates,
@@ -786,6 +815,7 @@ export function ChatWorkspace({
             onLoadFocusPromotionDecisions={onLoadFocusPromotionDecisions}
             onCreateFocusFrame={onCreateFocusFrame}
             onTransitionFocusFrame={onTransitionFocusFrame}
+            onGenerateFocusPromotionCandidates={onGenerateFocusPromotionCandidates}
             onReloadFocusFrames={onReloadFocusFrames}
             knowledgeEntities={knowledgeEntities}
             knowledgeRelations={knowledgeRelations}
@@ -850,6 +880,16 @@ export function ChatWorkspace({
             importSourcesLoading={importSourcesLoading}
             onLoadImportBundle={onLoadImportBundle}
             onLoadRawImportContent={onLoadRawImportContent}
+            proposalTargetOptions={graph
+              ? buildImportKnowledgeProposalTargets(
+                  graph.conversation,
+                  focusFrameQueryByNodeId.values(),
+                )
+              : []}
+            onRequestImportKnowledgeProposals={onRequestImportKnowledgeProposals}
+            onDiscoverImportKnowledgeProposals={onDiscoverImportKnowledgeProposals}
+            onReviewImportKnowledgeProposal={onReviewImportKnowledgeProposal}
+            onListImportKnowledgeProposalReviews={onListImportKnowledgeProposalReviews}
           />
         </Suspense>
       ) : null}

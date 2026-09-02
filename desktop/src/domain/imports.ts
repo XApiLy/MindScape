@@ -168,6 +168,31 @@ export type ImportKnowledgeProposalBatchProjection = {
   generatedAt: string;
 };
 
+export type ImportKnowledgeProposalDiscoveryQuery = {
+  importSourceId: string;
+  importRevisionId: string;
+  limit: number;
+};
+
+export type ImportKnowledgeProposalRequestState = "pending" | "completed";
+
+export type ImportKnowledgeProposalDiscoveryItem = {
+  request: ImportKnowledgeProposalRequestInput;
+  generationRunId: string;
+  state: ImportKnowledgeProposalRequestState;
+  batch: ImportKnowledgeProposalBatchProjection | null;
+  proposalCount: number;
+  reviewedCount: number;
+  updatedAt: string;
+};
+
+export type ImportKnowledgeProposalDiscoveryProjection = {
+  contractVersion: "mindscape.import-knowledge-proposal.v1";
+  importSourceId: string;
+  importRevisionId: string;
+  items: ImportKnowledgeProposalDiscoveryItem[];
+};
+
 export type ImportKnowledgeProposalReviewChoice =
   | {
       action: "confirm";
