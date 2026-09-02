@@ -101,6 +101,18 @@ impl KernelService {
         self.store.list_import_sources(conversation_id)
     }
 
+    pub fn find_import_source_by_content_hash(
+        &self,
+        content_hash: &str,
+    ) -> KernelResult<Option<crate::domain::contracts::ImportSource>> {
+        if content_hash.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "Import content hash must not be empty".into(),
+            ));
+        }
+        self.store.find_import_source_by_content_hash(content_hash)
+    }
+
     pub fn list_import_storage_refs(&self) -> KernelResult<std::collections::HashSet<String>> {
         self.store.list_import_storage_refs()
     }

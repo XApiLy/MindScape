@@ -584,6 +584,14 @@ impl SqliteStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn find_import_source_by_content_hash(
+        &self,
+        content_hash: &str,
+    ) -> KernelResult<Option<crate::domain::contracts::ImportSource>> {
+        let connection = self.connection()?;
+        self.list_import_sources_by_hash(&connection, content_hash)
+    }
+
     pub fn list_import_storage_refs(&self) -> KernelResult<HashSet<String>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare("SELECT storage_ref FROM import_sources")?;
@@ -666,6 +674,32 @@ impl SqliteStore {
             [source_id],
             |row| Ok(crate::domain::contracts::ImportSource { id: row.get(0)?, conversation_id: row.get(1)?, platform: parse_json(&row.get::<_, String>(2)?, 2)?, original_file_name: row.get(3)?, content_hash: row.get(4)?, storage_ref: row.get(5)?, created_at: row.get(6)? }),
         ).optional().map_err(Into::into)
+    }
+
+    fn list_import_sources_by_hash(
+        &self,
+        connection: &Connection,
+        content_hash: &str,
+    ) -> KernelResult<Option<crate::domain::contracts::ImportSource>> {
+        connection
+            .query_row(
+                "SELECT id, conversation_id, platform, original_file_name, content_hash, storage_ref, created_at
+                 FROM import_sources WHERE content_hash = ?1",
+                [content_hash],
+                |row| {
+                    Ok(crate::domain::contracts::ImportSource {
+                        id: row.get(0)?,
+                        conversation_id: row.get(1)?,
+                        platform: parse_json(&row.get::<_, String>(2)?, 2)?,
+                        original_file_name: row.get(3)?,
+                        content_hash: row.get(4)?,
+                        storage_ref: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Reserves a stable provider run before any extraction can start.

@@ -437,6 +437,35 @@ pub fn import_generic_file(
             safe_message: error.to_string(),
             retryable: false,
         })?;
+    if stored.duplicate {
+        let existing_source = state
+            .service
+            .find_import_source_by_content_hash(&stored.content_hash)
+            .map_err(CommandError::from)?
+            .ok_or_else(|| CommandError {
+                code: "integrity",
+                safe_message: "检测到重复来源文件，但本地来源记录不存在；请重启后重试。".into(),
+                retryable: true,
+            })?;
+        if existing_source.conversation_id != conversation_id {
+            return Err(CommandError {
+                code: "validation",
+                safe_message: "这份内容已导入到其他会话，请切换到原会话查看，或修改内容后再导入。"
+                    .into(),
+                retryable: false,
+            });
+        }
+        let bundle = state
+            .service
+            .get_import_bundle(&existing_source.id)
+            .map_err(CommandError::from)?;
+        return Ok(GenericImportCommandResult {
+            source: bundle.source,
+            revision: bundle.revision,
+            report: bundle.report,
+            duplicate: true,
+        });
+    }
     let source = ImportSource {
         id: new_id("import-source"),
         conversation_id,

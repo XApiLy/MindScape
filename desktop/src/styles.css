@@ -1405,8 +1405,9 @@ button:disabled {
 /* UI-HANDOFF-06: 导入 Intake 样式入口；承载真实预检、import_generic_file 加载/成功/重复/错误状态，不改变 ImportCandidate/ParseReport 语义。 */
 .import-dialog {
   display: flex;
-  width: min(720px, 100%);
-  max-height: min(840px, calc(100vh - 40px));
+  width: min(760px, 100%);
+  height: min(920px, calc(100dvh - 24px));
+  max-height: calc(100dvh - 24px);
   overflow: hidden;
   flex-direction: column;
   background: var(--panel-raised);
@@ -1417,10 +1418,13 @@ button:disabled {
 
 .import-content {
   display: grid;
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 18px;
-  gap: 13px;
+  padding: 14px 18px;
+  gap: 10px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .import-intro p {
@@ -1432,6 +1436,7 @@ button:disabled {
 
 .import-source-history {
   display: grid;
+  max-block-size: 116px;
   overflow: hidden;
   background: var(--panel-inset);
   border: 1px solid var(--line);
@@ -1486,6 +1491,7 @@ button:disabled {
 
 .import-source-list {
   display: grid;
+  overflow-y: auto;
 }
 
 .import-source-list button {
@@ -1581,8 +1587,8 @@ button:disabled {
 
 .import-dropzone {
   display: grid;
-  min-height: 190px;
-  padding: 26px 20px;
+  min-height: 128px;
+  padding: 16px 20px;
   place-items: center;
   align-content: center;
   gap: 8px;
@@ -1632,7 +1638,9 @@ button:disabled {
 }
 
 .import-paste-field textarea {
-  min-height: 190px;
+  min-height: 126px;
+  height: clamp(126px, 18dvh, 164px);
+  max-height: 220px;
   padding: 13px;
   color: #e5e2dd;
   background: var(--panel-inset);
@@ -2455,6 +2463,7 @@ button:disabled {
 
 .import-dialog-footer {
   display: flex;
+  flex: 0 0 auto;
   padding: 12px 16px;
   align-items: center;
   justify-content: space-between;
@@ -2478,11 +2487,38 @@ button:disabled {
   position: fixed;
   z-index: 100;
   display: grid;
-  padding: 20px;
+  padding: 12px;
   background: rgba(0, 0, 0, 0.76);
   inset: 0;
   place-items: center;
   backdrop-filter: blur(6px);
+}
+
+@media (max-height: 760px) {
+  .import-dialog {
+    height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .import-content {
+    padding-block: 10px;
+    gap: 8px;
+  }
+
+  .dialog-header,
+  .import-dialog-footer {
+    padding-block: 9px;
+  }
+
+  .import-paste-field textarea {
+    min-height: 96px;
+    height: 112px;
+  }
+
+  .import-dropzone {
+    min-height: 104px;
+    padding-block: 12px;
+  }
 }
 
 .settings-dialog {

@@ -21,6 +21,7 @@ import {
   inspectPastedConversation,
   type ImportIntakeCandidate,
 } from "../app/importIntake";
+import { commandErrorMessage } from "../app/commandErrorPresentation";
 import {
   importedRoleLabel,
   importMessageMarkdown,
@@ -317,7 +318,7 @@ function ImportKnowledgeProposalReviewCard({
       setReviewState({
         kind: "error",
         input,
-        message: error instanceof Error ? error.message : String(error),
+        message: commandErrorMessage(error),
       });
     }
   };
@@ -431,7 +432,7 @@ function ImportKnowledgeProposalPanel({
     try {
       setReviews(await onListReviews(requestId));
     } catch (error) {
-      setReviewHistoryError(error instanceof Error ? error.message : String(error));
+      setReviewHistoryError(commandErrorMessage(error));
     }
   };
 
@@ -476,7 +477,7 @@ function ImportKnowledgeProposalPanel({
       setRequestState({
         kind: "error",
         input,
-        message: error instanceof Error ? error.message : String(error),
+        message: commandErrorMessage(error),
       });
     }
   };
@@ -747,7 +748,7 @@ export function ImportIntakeDialog({
         ? { kind: "error", message: integrityIssue }
         : { kind: "ready", projection };
     } catch (error) {
-      return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+      return { kind: "error", message: commandErrorMessage(error) };
     }
   };
 
@@ -765,7 +766,7 @@ export function ImportIntakeDialog({
       setBundleResult(bundle);
       setRawContentState(nextRawContentState);
     } catch (error) {
-      setBundleError(error instanceof Error ? error.message : String(error));
+      setBundleError(commandErrorMessage(error));
     } finally {
       setBundleLoadingSourceId(null);
     }
@@ -792,7 +793,7 @@ export function ImportIntakeDialog({
       setImportResult(result);
       if (onLoadImportBundle) await loadBundle(result.source.id);
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : String(error));
+      setImportError(commandErrorMessage(error));
     } finally {
       setImporting(false);
     }
