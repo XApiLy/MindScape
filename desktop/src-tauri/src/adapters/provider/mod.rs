@@ -1,13 +1,40 @@
+mod chunking;
+mod embedding;
+mod import_knowledge;
 mod mock;
+mod openai_compatible;
 mod registry;
+mod retrieval;
 mod sse;
 
+pub use chunking::{ChunkKind, MARKDOWN_CHUNK_VERSION, TextChunk, chunk_markdown};
+pub use embedding::{
+    DEFAULT_EMBEDDING_DIMENSIONS, EmbeddingAdapter, EmbeddingMetadata, EmbeddingRecord, IndexInput,
+    LOCAL_EMBEDDING_MODEL_VERSION, LocalHashEmbedding, LocalVectorIndex, RetrievalAvailability,
+    RetrievalCandidate, RetrievalNotice, RetrievalResult, RetrievalSource, VectorIndexRestoreError,
+    VectorMatch, merge_retrieval_candidates,
+};
+pub use import_knowledge::{
+    DeterministicImportKnowledgeSuggestionProducer, ImportKnowledgeSuggestionError,
+    ImportKnowledgeSuggestionProducer,
+};
 #[allow(unused_imports)]
 pub use mock::{MockProvider, MockScenario};
+pub use openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 #[allow(unused_imports)]
 pub use registry::{
-    ModelCapabilities, ProviderAdapter, ProviderDescriptor, ProviderRegistry, ProviderRuntime,
-    ProviderRuntimeError, RunCancellation,
+    GenerationParameterCapabilities, InputModality, ModelCapabilities, ParameterSupport,
+    ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor, ProviderReasoningMode,
+    ProviderRegistry, ProviderRuntime, ProviderRuntimeError, ReasoningControl, RunCancellation,
+};
+pub(crate) use retrieval::knowledge_entity_source_hash;
+pub use retrieval::{
+    HYBRID_RETRIEVAL_VERSION, HydratedRetrievalCandidate, KNOWLEDGE_ENTITY_INDEX_VERSION,
+    KnowledgeFullTextMatch, KnowledgeVectorSnapshot, RetrievalProjectionError,
+    SemanticQueryEmbedding, build_knowledge_embedding_record,
+    build_knowledge_embedding_record_from_vector, knowledge_search_text, normalize_retrieval_text,
+    project_retrieval_result, retrieve_validated_knowledge,
+    retrieve_validated_knowledge_with_semantic,
 };
 #[allow(unused_imports)]
 pub use sse::{SseDecoder, SseFrame};
@@ -50,6 +77,7 @@ mod tests {
                 max_cost_microunits: None,
                 timeout_ms: 5_000,
             },
+            effective_run_profile: None,
             idempotency_key: "idempotency-1".into(),
             created_at: "2026-08-14T00:00:00Z".into(),
         }
@@ -148,5 +176,17 @@ mod tests {
             events.last().unwrap().event,
             ModelRunEvent::Cancelled { .. }
         ));
+    }
+
+    #[test]
+    fn connection_test_routes_to_registered_provider() {
+        let mut registry = ProviderRegistry::default();
+        registry.register(MockProvider::standard()).unwrap();
+        let result = ProviderRuntime::new(registry)
+            .test_connection("mock")
+            .expect("test mock connection");
+        assert!(result.authenticated);
+        assert_eq!(result.provider_id, "mock");
+        assert_eq!(result.available_models, vec!["mock-stream-v1"]);
     }
 }

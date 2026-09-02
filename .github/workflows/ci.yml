@@ -26,11 +26,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          forbidden_pattern='(^|/)(node_modules|target|dist|coverage|runtime-data|local-data|crash-reports)/|(^|/)\.env($|\.)|\.(db|sqlite|sqlite3|pem|p12|pfx)$|\.(db|sqlite|sqlite3)-(wal|shm)$'
-          if git ls-files | grep -E "$forbidden_pattern"; then
+          forbidden_pattern='(^|/)(node_modules|target(-[^/]*)?|dist|coverage|runtime-data|local-data|crash-reports)/|(^|/)\.env($|\.)|\.(db|sqlite|sqlite3|key|pem|p12|pfx|exe)$|\.(db|sqlite|sqlite3)-(wal|shm)$'
+          if git ls-files | grep -Ei "$forbidden_pattern"; then
             echo "Forbidden generated, runtime, credential, or database files are tracked."
             exit 1
           fi
+
+      - name: Enforce PEC current-window policy
+        run: node scripts/check-pec-retention.mjs
+
+      - name: Scan tracked files for credential material
+        run: node scripts/check-secrets.mjs --tracked
 
   frontend:
     name: frontend

@@ -1,8 +1,12 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::domain::ContextSnapshot;
+use crate::domain::{ContextSnapshot, RunState};
 
 pub const RUNTIME_CONTRACT_VERSION: &str = "mindscape.runtime.v1";
+pub const APPLICATION_INTERRUPTED_PROVIDER_CODE: &str = "application_interrupted";
+pub const EFFECTIVE_RUN_PROFILE_CONTRACT_VERSION: &str = "mindscape.effective-run-profile.v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +17,80 @@ pub enum CapabilityRequirement {
     UsageReporting,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReasoningMode {
+    Off,
+    Standard,
+    Deep,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolPermission {
+    Disabled,
+    Automatic,
+    AskEachTime,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RunValueOrigin {
+    User,
+    Conversation,
+    Project,
+    SystemRecommendation,
+    ProviderConstraint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationParameters {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub max_output_tokens: Option<u64>,
+    pub response_format: Option<String>,
+    pub seed: Option<i64>,
+    pub vendor_parameters: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunBudgetEnvelope {
+    pub max_input_tokens: Option<u64>,
+    pub max_reasoning_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub max_cost_microunits: Option<u64>,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCapabilitySnapshot {
+    pub catalog_version: String,
+    pub context_window_tokens: Option<u64>,
+    pub supported_capabilities: Vec<CapabilityRequirement>,
+    pub unsupported_parameters: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveRunProfile {
+    pub contract_version: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub reasoning_mode: ReasoningMode,
+    pub reasoning_budget: Option<u64>,
+    pub generation_parameters: GenerationParameters,
+    pub context_policy: String,
+    pub allowed_capabilities: Vec<CapabilityRequirement>,
+    pub tool_permission: ToolPermission,
+    pub budget_envelope: RunBudgetEnvelope,
+    pub value_origins: BTreeMap<String, RunValueOrigin>,
+    pub capability_snapshot: RunCapabilitySnapshot,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRunBudget {
@@ -21,7 +99,7 @@ pub struct ModelRunBudget {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRunRequest {
     pub contract_version: String,
@@ -33,6 +111,8 @@ pub struct ModelRunRequest {
     pub model_id: String,
     pub capabilities: Vec<CapabilityRequirement>,
     pub budget: ModelRunBudget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_run_profile: Option<EffectiveRunProfile>,
     pub idempotency_key: String,
     pub created_at: String,
 }
@@ -70,6 +150,19 @@ pub struct ProviderError {
     pub retryable: bool,
     pub retry_after_ms: Option<u64>,
     pub provider_status: Option<u16>,
+}
+
+impl ProviderError {
+    pub fn application_interrupted() -> Self {
+        Self {
+            category: ProviderErrorCategory::Unknown,
+            provider_code: Some(APPLICATION_INTERRUPTED_PROVIDER_CODE.into()),
+            safe_message: "MindScape exited before this response finished.".into(),
+            retryable: true,
+            retry_after_ms: None,
+            provider_status: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,6 +212,33 @@ pub enum ModelRunEvent {
     },
 }
 
+impl ModelRunEvent {
+    pub fn resulting_state(&self) -> RunState {
+        match self {
+            Self::Started | Self::TextDelta { .. } | Self::UsageUpdated { .. } => {
+                RunState::Streaming
+            }
+            Self::Completed { .. } => RunState::Completed,
+            Self::Cancelled { .. } => RunState::Cancelled,
+            Self::Failed { .. } => RunState::Failed,
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed { .. } | Self::Cancelled { .. } | Self::Failed { .. }
+        )
+    }
+
+    pub fn application_interrupted(partial_content_retained: bool) -> Self {
+        Self::Failed {
+            error: ProviderError::application_interrupted(),
+            partial_content_retained,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRunEventEnvelope {
@@ -129,4 +249,19 @@ pub struct ModelRunEventEnvelope {
     pub sequence: u64,
     pub occurred_at: String,
     pub event: ModelRunEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRunProjection {
+    pub run_id: String,
+    pub conversation_id: String,
+    pub node_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub state: RunState,
+    pub last_sequence: u64,
+    pub partial_content: String,
+    pub terminal_event: Option<ModelRunEvent>,
+    pub updated_at: String,
 }

@@ -21,7 +21,13 @@ Desktop.ini
 
 # Rust / Tauri generated output
 **/target/
+**/target-*/
 **/src-tauri/gen/schemas/
+
+# Local Windows validation artifacts
+desktop/*.exe
+artifacts/acceptance/versions/
+artifacts/acceptance/LATEST.txt
 
 # Logs and temporary files
 *.log
@@ -65,3 +71,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Local browser runs and external visual-reference workspaces
+/.playwright-cli/
+/output/
+/example/
+/tools/visual-prototype/

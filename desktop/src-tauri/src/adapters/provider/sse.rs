@@ -8,29 +8,44 @@ pub struct SseFrame {
 
 #[derive(Debug, Default)]
 pub struct SseDecoder {
-    buffer: String,
+    buffer: Vec<u8>,
 }
 
 impl SseDecoder {
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseFrame>, std::str::Utf8Error> {
-        self.buffer.push_str(std::str::from_utf8(chunk)?);
-        self.buffer = self.buffer.replace("\r\n", "\n");
+        self.buffer.extend_from_slice(chunk);
         let mut frames = Vec::new();
 
-        while let Some(boundary) = self.buffer.find("\n\n") {
-            let block = self.buffer[..boundary].to_string();
-            self.buffer.drain(..boundary + 2);
-            if let Some(frame) = parse_block(&block) {
+        while let Some((boundary, delimiter_length)) = find_boundary(&self.buffer) {
+            let block = std::str::from_utf8(&self.buffer[..boundary])?.to_string();
+            self.buffer.drain(..boundary + delimiter_length);
+            if let Some(frame) = parse_block(&block.replace("\r\n", "\n")) {
                 frames.push(frame);
             }
         }
         Ok(frames)
     }
 
-    pub fn finish(&mut self) -> Option<SseFrame> {
-        let block = std::mem::take(&mut self.buffer);
-        parse_block(block.trim_end_matches(['\r', '\n']))
+    pub fn finish(&mut self) -> Result<Option<SseFrame>, std::str::Utf8Error> {
+        let bytes = std::mem::take(&mut self.buffer);
+        let block = std::str::from_utf8(&bytes)?;
+        Ok(parse_block(
+            block.replace("\r\n", "\n").trim_end_matches(['\r', '\n']),
+        ))
     }
+}
+
+fn find_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| (index, 2))
+        .or_else(|| {
+            buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| (index, 4))
+        })
 }
 
 fn parse_block(block: &str) -> Option<SseFrame> {
@@ -86,6 +101,16 @@ mod tests {
     fn flushes_a_final_frame_without_blank_terminator() {
         let mut decoder = SseDecoder::default();
         decoder.push(b"data: [DONE]").unwrap();
-        assert_eq!(decoder.finish().unwrap().data, "[DONE]");
+        assert_eq!(decoder.finish().unwrap().unwrap().data, "[DONE]");
+    }
+
+    #[test]
+    fn preserves_utf8_characters_split_across_network_chunks() {
+        let bytes = "data: 中文\n\n".as_bytes();
+        let split = bytes.iter().position(|byte| *byte >= 0x80).unwrap() + 1;
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.push(&bytes[..split]).unwrap().is_empty());
+        let frames = decoder.push(&bytes[split..]).unwrap();
+        assert_eq!(frames[0].data, "中文");
     }
 }

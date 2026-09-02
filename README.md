@@ -10,6 +10,10 @@ MindScape 是一个模型无关的 AI 工作空间。它帮助用户表达意图
 
 - [参与贡献与本地最低检查](CONTRIBUTING.md)
 - [Git 提交、评审与合并规范](docs/engineering/git-workflow.md)
+- [PEC 当前窗口与归档制度](docs/engineering/pec-retention-policy.md)
+- [验收程序构建与交付规则](docs/engineering/acceptance-build-policy.md)：所有本地验收程序统一发布到`artifacts/acceptance/`。
+- [视觉与交互设计中心](docs/design/visual-and-interaction/README.md)：统一汇总视觉总纲、核心交互、工程边界、职责、当前决策和历史来源。
+- [分层视觉与氛围系统完整执行计划](docs/engineering/layered-visual-system-execution-plan-20260819.md)：设计/原型轨可先行，生产实现受范围、依赖与原型签字门禁约束。
 - `main` 是唯一长期主干；功能通过短生命周期分支和 Pull Request 合并。
 - `desktop/` 是唯一正式工程，`apps/desktop/` 与 `UI Design/` 只能作为参考，不能成为正式依赖或领域权威来源。
 
@@ -28,7 +32,7 @@ MindScape 是一个模型无关的 AI 工作空间。它帮助用户表达意图
 - [产品内核与工程总览](docs/core-kernel-overview.md)
 - [第一版任务拆分与团队分配](docs/v1-work-breakdown.md)
 - [V1 前五名员工任务分配](docs/v1-first-five-assignments.md)
-- [V1 跨团队契约基线 RC1](docs/contracts/v1-contract-baseline.md)
+- [V1 跨团队契约基线](docs/contracts/v1-contract-baseline.md)
 - [V1 安全威胁模型](docs/architecture/v1-threat-model.md)
 - [V1 架构走查清单](docs/architecture/v1-architecture-walkthrough.md)
 
@@ -40,3 +44,4 @@ MindScape 是一个模型无关的 AI 工作空间。它帮助用户表达意图
 2. 会影响产品定位、交互、架构或范围的选择写入 `decisions.md`。
 3. 每轮讨论的新增观点、分歧和待办写入 `discussion-log.md`。
 4. 未确定的内容明确标记为“待决策”，不伪装成已经达成的结论。
+5. `Project Engineering Communication/` 只保留员工01～06各自最新 PEC 和一个控制文件；员工06固定为视觉与交互设计工程师，旧 PEC 原样移动到独立归档目录。

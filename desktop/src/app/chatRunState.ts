@@ -1,10 +1,13 @@
-import type {
-  BranchType,
-  ModelRunEventEnvelope,
-  ModelUsage,
-  ProviderError,
-  ProviderErrorCategory,
-} from "../domain";
+import type { BranchType } from "../domain/common.ts";
+import {
+  APPLICATION_INTERRUPTED_PROVIDER_CODE,
+  type EffectiveRunProfile,
+  type ModelRunEventEnvelope,
+  type ModelRunProjection,
+  type ModelUsage,
+  type ProviderError,
+  type ProviderErrorCategory,
+} from "../domain/runtime.ts";
 
 export const SUPPORTED_RUNTIME_CONTRACT_VERSION = "mindscape.runtime.v1";
 
@@ -13,6 +16,8 @@ export type ChatRunStatus = "starting" | "streaming" | "completed" | "cancelled"
 export type ChatRunState = {
   id: string;
   nodeId: string;
+  providerId: string;
+  modelId: string;
   prompt: string;
   parentNodeId: string | null;
   branchType: BranchType;
@@ -25,6 +30,9 @@ export type ChatRunState = {
   partialContentRetained: boolean;
   lastSequence: number;
   protocolWarning: string | null;
+  cancelRequested: boolean;
+  cancelErrorMessage: string | null;
+  effectiveRunProfile?: EffectiveRunProfile;
 };
 
 export type ProviderErrorPresentation = {
@@ -37,13 +45,18 @@ export type ProviderErrorPresentation = {
 export function createChatRunState(input: {
   runId: string;
   nodeId: string;
+  providerId: string;
+  modelId: string;
   prompt: string;
   parentNodeId: string | null;
   branchType: BranchType;
+  effectiveRunProfile?: EffectiveRunProfile;
 }): ChatRunState {
   return {
     id: input.runId,
     nodeId: input.nodeId,
+    providerId: input.providerId,
+    modelId: input.modelId,
     prompt: input.prompt,
     parentNodeId: input.parentNodeId,
     branchType: input.branchType,
@@ -56,7 +69,61 @@ export function createChatRunState(input: {
     partialContentRetained: false,
     lastSequence: 0,
     protocolWarning: null,
+    cancelRequested: false,
+    cancelErrorMessage: null,
+    ...(input.effectiveRunProfile ? { effectiveRunProfile: input.effectiveRunProfile } : {}),
   };
+}
+
+export function createChatRunStateFromProjection(
+  projection: ModelRunProjection,
+  input: {
+    prompt: string;
+    parentNodeId: string | null;
+    branchType: BranchType;
+  },
+): ChatRunState {
+  const terminal = projection.terminalEvent;
+  const completed = terminal?.type === "completed" ? terminal : null;
+  const cancelled = terminal?.type === "cancelled" ? terminal : null;
+  const failed = terminal?.type === "failed" ? terminal : null;
+  const status: ChatRunStatus =
+    projection.state === "pending" ? "starting" : projection.state;
+
+  return {
+    id: projection.runId,
+    nodeId: projection.nodeId,
+    providerId: projection.providerId,
+    modelId: projection.modelId,
+    prompt: input.prompt,
+    parentNodeId: input.parentNodeId,
+    branchType: input.branchType,
+    content: projection.partialContent,
+    status,
+    usage: completed?.usage ?? null,
+    error: failed?.error ?? null,
+    errorMessage: failed?.error.safeMessage ?? null,
+    finishReason: completed?.finishReason ?? null,
+    partialContentRetained:
+      cancelled?.partialContentRetained ?? failed?.partialContentRetained ?? false,
+    lastSequence: projection.lastSequence,
+    protocolWarning: null,
+    cancelRequested: false,
+    cancelErrorMessage: null,
+  };
+}
+
+export function requestChatRunCancellation(state: ChatRunState): ChatRunState {
+  if (isTerminal(state.status) || state.cancelRequested) return state;
+  return { ...state, cancelRequested: true, cancelErrorMessage: null };
+}
+
+export function rejectChatRunCancellation(
+  state: ChatRunState,
+  message: string,
+): ChatRunState {
+  if (isTerminal(state.status)) return state;
+  return { ...state, cancelRequested: false, cancelErrorMessage: message };
 }
 
 function isTerminal(status: ChatRunStatus) {
@@ -126,6 +193,8 @@ export function reduceModelRunEnvelope(
       return {
         ...common,
         status: "completed",
+        cancelRequested: false,
+        cancelErrorMessage: null,
         usage: envelope.event.usage,
         finishReason: envelope.event.finishReason,
       };
@@ -133,12 +202,16 @@ export function reduceModelRunEnvelope(
       return {
         ...common,
         status: "cancelled",
+        cancelRequested: false,
+        cancelErrorMessage: null,
         partialContentRetained: envelope.event.partialContentRetained,
       };
     case "failed":
       return {
         ...common,
         status: "failed",
+        cancelRequested: false,
+        cancelErrorMessage: null,
         error: envelope.event.error,
         errorMessage: envelope.event.error.safeMessage,
         partialContentRetained: envelope.event.partialContentRetained,
@@ -210,6 +283,22 @@ const errorCopy: Record<ProviderErrorCategory, Omit<ProviderErrorPresentation, "
 };
 
 export function presentProviderError(error: ProviderError): ProviderErrorPresentation {
+  if (error.providerCode === APPLICATION_INTERRUPTED_PROVIDER_CODE) {
+    return {
+      title: "上次生成被应用退出中断",
+      guidance: "MindScape 已恢复持久化的部分内容。本次运行没有被标记为完成，你可以明确选择重新生成。",
+      action: "retry",
+      actionLabel: "重新生成",
+    };
+  }
+  if (error.category === "authentication" && error.providerCode === "credential_not_found") {
+    return {
+      title: "尚未配置 API Key",
+      guidance: "请在模型设置中安全保存该 Provider 的 Key，然后重新发送；MindScape 不会自动改用 Mock。",
+      action: "openSettings",
+      actionLabel: "配置 Key",
+    };
+  }
   const presentation = errorCopy[error.category];
   if (error.category === "rateLimit" && error.retryAfterMs) {
     return {

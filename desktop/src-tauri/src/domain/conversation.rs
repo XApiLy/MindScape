@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::{ContentBlock, ContextSnapshot, KernelError, KernelResult};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 18;
 
 pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
@@ -208,6 +208,42 @@ pub struct CanvasNodePosition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct CanvasViewportState {
+    pub conversation_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCanvasViewportInput {
+    pub conversation_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+}
+
+impl SaveCanvasViewportInput {
+    pub fn validate(&self) -> KernelResult<()> {
+        if self.conversation_id.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "conversation ID is required".into(),
+            ));
+        }
+        if !self.x.is_finite() || !self.y.is_finite() || !self.zoom.is_finite() || self.zoom <= 0.0
+        {
+            return Err(KernelError::Validation(
+                "canvas viewport values must be finite and zoom must be positive".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationGraph {
     pub conversation: Conversation,
     pub nodes: Vec<ConversationNode>,
@@ -257,6 +293,48 @@ pub struct AppendTurnInput {
     pub prompt: String,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartModelRunInput {
+    pub conversation_id: String,
+    pub parent_node_id: Option<String>,
+    pub branch_type: BranchType,
+    pub title: String,
+    pub prompt: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub capabilities: Vec<crate::domain::contracts::CapabilityRequirement>,
+    pub budget: crate::domain::contracts::ModelRunBudget,
+    #[serde(default)]
+    pub effective_run_profile: Option<crate::domain::contracts::EffectiveRunProfile>,
+    pub idempotency_key: String,
+}
+
+impl StartModelRunInput {
+    pub fn validate(&self) -> KernelResult<()> {
+        if self.provider_id.trim().is_empty() || self.model_id.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "provider and model are required".into(),
+            ));
+        }
+        if self.idempotency_key.trim().is_empty() {
+            return Err(KernelError::Validation(
+                "idempotency key is required".into(),
+            ));
+        }
+        AppendTurnInput {
+            conversation_id: self.conversation_id.clone(),
+            parent_node_id: self.parent_node_id.clone(),
+            branch_type: self.branch_type,
+            title: self.title.clone(),
+            prompt: self.prompt.clone(),
+            provider_id: Some(self.provider_id.clone()),
+            model_id: Some(self.model_id.clone()),
+        }
+        .validate()
+    }
 }
 
 impl AppendTurnInput {

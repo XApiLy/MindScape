@@ -1,0 +1,20 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "runFingerprintSha256Prefix": "f01bb1192188",
+  "runState": "cancelled",
+  "nodeState": "cancelled",
+  "cancelReason": "userRequested",
+  "lastSequence": 126,
+  "eventCount": 126,
+  "terminalEventCount": 1,
+  "postTerminalDeltaCount": 0,
+  "partialLength": 230,
+  "partialRetained": true,
+  "assistantMessagePresent": true,
+  "runCountForNode": 1,
+  "duplicateSequenceCount": 0,
+  "foreignKeyViolationCount": 0,
+  "integrityCheck": "ok",
+  "stableAfter10Seconds": true
+}

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "buildId": "20260820-155308-m1-clean-gate-98e12706c2f4",
+  "sourceCommit": "98e12706c2f4",
+  "sourceTreeDirty": false,
+  "sha256": "6FE02B0BD551288805B8034AE39DB19528815F901F24D1C69471865985ABA59A",
+  "branchCounts": {
+    "nodes": {
+      "continues": 23,
+      "deepens": 1,
+      "diverges": 1
+    },
+    "snapshots": {
+      "continues": 23,
+      "deepens": 1,
+      "diverges": 1
+    }
+  },
+  "newBranches": [
+    {
+      "branchType": "deepens",
+      "nodeFingerprint": "2846ccaac7a9",
+      "parentFingerprint": "60e6f8a0431b",
+      "edgeRelation": "deepens",
+      "selectedMessageCount": 2,
+      "omittedMessageCount": 0,
+      "runState": "completed",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash"
+    },
+    {
+      "branchType": "diverges",
+      "nodeFingerprint": "a8681f3b8eda",
+      "parentFingerprint": "1ab7c7ff1ba4",
+      "edgeRelation": "diverges",
+      "selectedMessageCount": 3,
+      "omittedMessageCount": 1,
+      "runState": "completed",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash"
+    }
+  ],
+  "integrityCheck": "ok",
+  "foreignKeyViolations": 0,
+  "pendingOrStreaming": 0,
+  "canvasRecoveryGap": {
+    "cancelledNodesWithPositions": 0,
+    "applicationInterruptedNodesWithPositions": 0,
+    "applicationInterruptedNodesWithViewports": 1
+  }
+}

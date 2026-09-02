@@ -172,6 +172,7 @@ rust / fmt
 rust / clippy -D warnings
 rust / tests
 security / secret and forbidden-file scan
+governance / PEC seven-file current-window check
 ```
 
 GitHub 远程建立后，将以下 CI job 名称配置为 `main` 的 required status checks：
@@ -214,6 +215,7 @@ rust
 - 已进入发布版本的 migration 只能追加，禁止原地修改。
 - schema PR 必须包含从上一发布版本升级的测试样本、失败恢复和备份说明。
 - 领域契约先改 Rust 权威类型，再同步 TS 镜像和消费者；不得由 UI、SQLite 或 Provider SDK 反向定义语义。
+- 每个产生实质进展或状态变化的工程 PR 必须同时更新负责人 PEC；旧 PEC 进入独立归档，当前目录始终满足七文件不变量。
 - 导入原文、事件账本和已冻结 ContextSnapshot 不得被派生结果覆盖。
 - API Key 只进入操作系统安全凭据存储，不进入前端状态持久化、数据库、日志、测试快照或错误信息。
 - 一旦密钥进入提交，无论是否尚未推送，都按泄漏处理：立即撤销密钥，清理历史，记录事故；仅删除当前文件不算解决。

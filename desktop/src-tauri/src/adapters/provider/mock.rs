@@ -6,7 +6,11 @@ use crate::domain::contracts::{
 };
 use crate::domain::{new_id, now_timestamp};
 
-use super::{ModelCapabilities, ProviderAdapter, ProviderDescriptor, RunCancellation};
+use super::{
+    GenerationParameterCapabilities, InputModality, ModelCapabilities, ParameterSupport,
+    ProviderAdapter, ProviderConnectionTestResult, ProviderDescriptor, ReasoningControl,
+    RunCancellation,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MockScenario {
@@ -38,6 +42,17 @@ impl MockProvider {
                 usage_reporting: true,
                 streaming: true,
                 context_window_tokens: Some(16_384),
+                supports_reasoning: false,
+                reasoning_control: ReasoningControl::None,
+                reasoning_modes: vec![],
+                structured_output: false,
+                generation_parameters: GenerationParameterCapabilities {
+                    max_output_tokens: ParameterSupport::Supported,
+                    temperature: ParameterSupport::Unsupported,
+                    top_p: ParameterSupport::Unsupported,
+                    seed: ParameterSupport::Unsupported,
+                },
+                input_modalities: vec![InputModality::Text],
             },
         );
         Self {
@@ -69,6 +84,15 @@ impl MockProvider {
 impl ProviderAdapter for MockProvider {
     fn descriptor(&self) -> &ProviderDescriptor {
         &self.descriptor
+    }
+
+    fn test_connection(&self) -> Result<ProviderConnectionTestResult, ProviderError> {
+        Ok(ProviderConnectionTestResult {
+            provider_id: self.descriptor.id.clone(),
+            authenticated: true,
+            available_models: self.descriptor.models.keys().cloned().collect(),
+            checked_at: now_timestamp(),
+        })
     }
 
     fn run(

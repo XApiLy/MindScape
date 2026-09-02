@@ -1,0 +1,9 @@
+data: {"choices":[{"delta":{"content":"# 流式标题\n\n"},"finish_reason":null}],"usage":null}
+
+data: {"choices":[{"delta":{"content":"| 列 | 值 |\n| --- | --- |\n| A | 1 |\n\n```rust\nfn main() {"},"finish_reason":null}],"usage":null}
+
+data: {"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":34,"prompt_cache_hit_tokens":5}}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":null}
+
+data: [DONE]
